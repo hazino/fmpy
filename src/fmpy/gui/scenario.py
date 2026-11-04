@@ -44,6 +44,7 @@ class ScenarioWorker(QThread):
 class ScenarioDialog(QDialog):
     scenarioApplied = Signal(str, str)
     scenarioCleared = Signal()
+    resultReady = Signal(object)
 
     def __init__(self, fmu=None, parent=None):
         super().__init__(parent)
@@ -203,6 +204,7 @@ class ScenarioDialog(QDialog):
         self.status.setText(f"완료 — {verdict} / {len(rows)}개 샘플 / 저장: {directory}")
         self.openResultsButton.setEnabled(True)
         self.tabs.setCurrentWidget(self.plot)
+        self.resultReady.emit(result)
 
     def openResults(self):
         if self.resultDirectory:

@@ -99,7 +99,7 @@ def test_multiple_graph_selection_expansion_and_reset(app):
     viewer.close()
 
 
-def test_main_play_retains_scenario_after_dialog_close(app, reference_fmus_dist_dir, tmp_path):
+def test_main_play_retains_scenario_after_dialog_close(app, reference_fmus_dist_dir, tmp_path, monkeypatch):
     from PySide6.QtCore import QTimer
     from fmpy.gui.MainWindow import MainWindow
     window = MainWindow()
@@ -126,6 +126,27 @@ def test_main_play_retains_scenario_after_dialog_close(app, reference_fmus_dist_
     app.processEvents()
     assert dialog.result is not None, dialog.status.text()
     assert dialog.result["samples"][-1]["Float64_continuous_output"] == 7
+    assert window.result["Float64_continuous_output"][-1] == 7
+    assert window.ui.stackedWidget.currentWidget() == window.ui.resultPage
+    assert window.ui.actionSaveResult.isEnabled()
+    assert not dialog.isVisible()
+    assert (window.unzipdir / "plot.html").is_file()
+    variable = next(v for v in window.modelDescription.modelVariables
+                    if v.name == "Float64_continuous_output")
+    window.deselectVariable(variable)
+    assert window.ui.resultStackedWidget.currentWidget() == window.ui.noResultPage
+    missing = next(v for v in window.modelDescription.modelVariables if v.name == "Int32_output")
+    window.selectVariable(missing)  # not collected; must not crash the main plot
+    window.selectVariable(variable)
+    assert window.ui.resultStackedWidget.currentWidget() == window.ui.resultViewPage
+    from PySide6.QtWidgets import QFileDialog
+    saved = tmp_path / "main-result.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda **kwargs: (str(saved), "CSV"))
+    window.saveResult(plotted=True)
+    import csv
+    with saved.open() as stream:
+        exported = list(csv.DictReader(stream))
+    assert float(exported[-1]["Float64_continuous_output"]) == 7
     dialog.close()
     assert window.activeScenario is not None
     window.clearScenarioAction.trigger()

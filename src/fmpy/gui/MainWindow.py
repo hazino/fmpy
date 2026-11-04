@@ -286,6 +286,7 @@ class MainWindow(QMainWindow):
         self.scenarioAction.triggered.connect(self.openScenario)
         self.scenarioDialog = None
         self.activeScenario = None
+        self.scenarioStartedFromMain = False
         self.scenarioLabel = QLabel("시나리오: 미적용")
         self.ui.toolBar.addWidget(self.scenarioLabel)
         self.clearScenarioAction = self.ui.toolBar.addAction("시나리오 해제")
@@ -421,6 +422,8 @@ class MainWindow(QMainWindow):
     def openScenario(self):
         from .scenario import ScenarioDialog
 
+        self.scenarioStartedFromMain = False
+
         if self.simulationThread is not None and self.simulationThread.isRunning():
             QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
             return
@@ -428,10 +431,41 @@ class MainWindow(QMainWindow):
             self.scenarioDialog = ScenarioDialog(self.filename, self)
             self.scenarioDialog.scenarioApplied.connect(self.applyScenario)
             self.scenarioDialog.scenarioCleared.connect(self.clearScenario)
+            self.scenarioDialog.resultReady.connect(self.showScenarioResult)
         elif self.activeScenario is None and self.filename:
             self.scenarioDialog.fmuPath.setText(str(self.filename))
             self.scenarioDialog.validate()
         self.scenarioDialog.exec()
+
+    def showScenarioResult(self, result):
+        import numpy as np
+
+        rows = result["samples"]
+        names = list(rows[0]) if rows else ["time"]
+        variables = {v.name: v for v in self.modelDescription.modelVariables}
+        dtype = [("time", np.float64)]
+        for name in names:
+            if name == "time":
+                continue
+            kind = variables[name].type
+            dtype.append((name, {"Real": np.float64, "Integer": np.int32,
+                                  "Enumeration": np.int32, "Boolean": np.bool_,
+                                  "String": object}[kind]))
+        self.result = np.array([tuple(row[name] for name, _ in dtype) for row in rows], dtype=dtype)
+        self.selectedVariables.clear()
+        self.selectedVariables.update(v for v in variables.values()
+                                      if v.name in names and v.name != "time" and v.type != "String")
+        self.tableModel.layoutChanged.emit()
+        self.treeModel.layoutChanged.emit()
+        self.ui.actionShowResults.setEnabled(True)
+        self.ui.actionSaveResult.setEnabled(True)
+        self.ui.actionSavePlottedResult.setEnabled(True)
+        self.setCurrentPage(self.ui.resultPage)
+        self.updatePlotData()
+        if self.scenarioStartedFromMain:
+            self.scenarioStartedFromMain = False
+            self.scenarioDialog.accept()
+            self.raise_()
 
     def applyScenario(self, fmu, scenario):
         if not self.filename or Path(self.filename).resolve() != Path(fmu).resolve():
@@ -803,6 +837,7 @@ class MainWindow(QMainWindow):
         if self.activeScenario is not None:
             dialog = self.scenarioDialog
             if dialog is not None:
+                self.scenarioStartedFromMain = True
                 dialog.setModal(True)
                 dialog.show()
                 dialog.raise_()
@@ -930,13 +965,13 @@ class MainWindow(QMainWindow):
         import plotly
         from ..util import create_plotly_figure
 
-        if len(self.selectedVariables) == 0:
+        names = [variable.name for variable in self.selectedVariables
+                 if variable.name in self.result.dtype.names and variable.type != 'String']
+        if len(names) == 0:
             self.ui.resultStackedWidget.setCurrentWidget(self.ui.noResultPage)
 
         else:
             self.ui.resultStackedWidget.setCurrentWidget(self.ui.resultViewPage)
-
-            names = [variable.name for variable in self.selectedVariables]
 
             fig = create_plotly_figure(self.result, names=names)
 
@@ -1030,7 +1065,8 @@ class MainWindow(QMainWindow):
             from ..util import write_csv
 
             if plotted:
-                columns = [variable.name for variable in self.selectedVariables]
+                columns = [variable.name for variable in self.selectedVariables
+                           if variable.name in self.result.dtype.names]
             else:
                 columns = None
 

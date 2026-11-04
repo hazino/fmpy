@@ -25,6 +25,7 @@ plot = [
     "scipy>=1.14.1",
 ]
 gui = [
+    "plotly>=5.24.1",
     "typing-extensions>=4.4.0",
     "pyqtgraph>=0.13.7",
     "pyside6>=6.8.0.2",
