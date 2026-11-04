@@ -350,6 +350,110 @@ API로 Claude를 호출하는 자동화 스크립트를 새로 연결한 것은 
 pull되어 있음). Claude API 루프는 사용자 환경에서 최초 1회 실행 확인이
 필요하다. PR 생성 여부는 사용자 확인 대기.
 
+### 추가 변경: GUI 챗봇 인터페이스 (같은 세션, 이어서)
+
+사용자 요청: "fmpy 실행할때 에이전트 연동해서 챗봇형태로 자연어 요청하는
+인터페이스 추가해줘."
+
+- **중복 제거 먼저**: `examples/agent/ollama_loop.py`/`claude_loop.py`에
+  있던 루프 로직(prompt 템플릿, `ollama_generate`, `generate_scenario`,
+  Claude tool-calling 루프)을 `src/fmpy/scenario_backends.py`(신규, 진짜
+  라이브러리 코드)로 옮겼다. 두 CLI 스크립트는 이제 그 모듈을 부르는 얇은
+  래퍼로 교체했고, **리팩터 후 다시 실행해 동작이 그대로인지 확인**했다
+  (Ollama는 실제 재실행, Claude는 `py_compile`+ImportError 경로 재확인).
+  `on_log`/`cancelled` 콜백을 추가해 GUI의 QThread에서도 그대로 재사용
+  가능하게 했고, `include_samples`를 통과시켜 GUI가 전체 샘플 표를 받아
+  그래프를 그릴 수 있게 했다(`run()`은 기본적으로 샘플을 안 돌려주므로).
+  `ollama_models(host)`도 추가(서버에 pull된 모델 목록, 끊겨 있으면 `[]`).
+- `src/fmpy/gui/agent_chat.py` (신규): `AgentChatDialog`. FMU 선택 +
+  백엔드(Ollama/Claude) 선택 + 모델 선택(Ollama는 "모델 목록 새로고침"으로
+  서버에서 직접 조회) + 결과 폴더 + 채팅 입력창 + 결과 그래프 탭(기존
+  `ScenarioResults` 재사용). `AgentChatWorker`(QThread)가
+  `scenario_backends.run_with_ollama/run_with_claude`를 호출. 매 턴마다
+  `<결과폴더>/turn-NNN-HHMMSS/`에 결과 저장. "시나리오 JSON 저장...",
+  "결과 폴더 열기" 버튼 제공. **모델은 FMU를 직접 건드리지 않음** —
+  검증·실행은 항상 `scenario_agent`를 통해서만.
+- 진입점 두 곳에 연결: `src/fmpy/gui/scenario.py`의 `ScenarioDialog`에
+  "에이전트에게 요청..." 버튼 추가(제안 보기 버튼 옆), `src/fmpy/gui/
+  MainWindow.py` 툴바에도 같은 이름의 액션 추가(시나리오 적용 없이도,
+  FMU를 열자마자 바로 접근 가능 — "fmpy 실행할 때" 요청에 맞춤).
+- `tests/test_agent_chat.py` (신규, 7개): 구성·백엔드 전환(Claude 선택 시
+  host 비활성화)·FMU/요청 없을 때 거부·시나리오 저장(모킹)·MainWindow 툴바
+  연동은 네트워크 없이 확인. **Ollama가 실제로 떠 있을 때만** 도는 2개는
+  `ollama_models()`로 skip 조건을 걸고, 실제 FMU에 대해 턴 전체(생성→검증→
+  실행→저장)와 중지(취소) 경로를 **진짜로 실행**해 확인했다(모킹 없음).
+- 발견한 버그 아님: `.exec()`를 헤드리스(offscreen) 환경에서 직접 호출하면
+  모달이라 이벤트 루프가 없는 한 멈춘다 — 테스트와 수동 확인 모두 다이얼로그를
+  직접 생성해 `.exec()`를 피하는 방식으로 작성했다(기존 `ScenarioProposalsDialog`
+  테스트와 같은 패턴). QThread의 내장 `finished` 시그널은 큐에 걸려 전달되므로
+  취소 테스트에서 `worker.wait()` 뒤 `app.processEvents()`를 한 번 더 호출해야
+  `setBusy(False)`가 실행된 상태를 확인할 수 있었다(테스트 쪽 수정, 다이얼로그
+  버그 아님).
+- `docs/scenario-runner-ko.md`, `docs/agent-integration-ko.md`에 사용법 반영.
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_gui.py
+tests/test_scenario_agent.py tests/test_pid_demo.py tests/test_agent_chat.py -q`
+→ **87 passed**(기존 80 + 신규 7). `scripts/check_gui.py`는 `ScenarioDialog`를
+실제 생성하므로 `agent_chat.py` import 체인까지 실제 창 생성으로 검증됨.
+
+미완료: 이번 턴에서는 **커밋/푸시하지 않았다** — 사용자가 명시적으로 요청하면
+진행. `qwen2.5` 등 tool-calling 지원 모델로 Ollama 쪽 품질 재확인, Claude
+백엔드의 실제 API 첫 실행은 여전히 미확인(환경에 키 없음).
+
+### 추가 변경: 여러 시나리오 일괄 실행 + 판정 종합 (같은 세션, 이어서)
+
+사용자 요청: "시나리오를 여러개 돌릴 수 있고 판정결과를 정리해주는 역할까지."
+
+- `src/fmpy/scenario_agent.py`에 `run_many(fmu, scenario_paths, output=None,
+  include_samples=0, debug_logging=False, on_progress=None, cancelled=None)`
+  추가. 파일을 하나씩 읽어 `run()`으로 실행하고, 하나가 깨져도(JSON 아님/
+  검증 실패/FMI 호출 거부) 나머지는 계속 진행. `_summarize_batch()`로
+  합격/불합격/판정 기준 없음/실행 불가 개수를 집계하고,
+  `format_batch_report()`로 사람이 읽는 Markdown 한 줄 표를 만든다.
+  `output`을 주면 `<폴더>/<파일이름(stem 또는 시나리오 name)>/`마다 개별
+  `report.json`/`results.csv`, 최상위에 `summary.json`을 쓴다.
+  `on_progress(index, entry)`로 진행 중 콜백, `cancelled()`로 중지(남은
+  파일은 읽지도 않고 `cancelled` 오류로 건너뜀 — 실제로 확인: 취소 시
+  존재하지 않는 다음 파일도 읽기 전에 건너뛰는 것까지 검증).
+  `TOOLS`/`_DISPATCH`에 `"batch"` 등록, CLI `batch` 서브커맨드 추가
+  (`--scenarios`는 파일 여러 개 또는 디렉터리 — 디렉터리면 `*.json` 자동
+  수집, `--report`로 Markdown 출력, 종료 코드 0/1/2는 불합격/실행 불가
+  유무로 구분).
+- **실제 PID 데모 7개로 검증**: `run_many`가 `5 합격 · 0 불합격 · 1 판정
+  기준 없음(02) · 1 실행 불가(07, 의도된 실패)`를 정확히 집계. CLI
+  `batch --report`로도 동일하게 확인, `summary.json`과 6개 서브폴더(07은
+  실행 자체가 안 돼 폴더 없음)까지 디스크에서 확인.
+- `src/fmpy/gui/scenario_batch.py` (신규): `ScenarioBatchDialog`. "파일
+  추가.../폴더에서 추가..." 로 시나리오 목록 구성(중복 제거), 체크박스로
+  선택, `BatchRunner`(QThread)가 `run_many`를 그대로 호출해 백그라운드
+  실행, 행마다 실시간 상태 갱신, 완료 시 요약 라벨(예: "7개 중 합격 5 ·
+  불합격 0 · 판정 기준 없음 1 · 실행 불가 1")과 "보고서 저장..." 버튼
+  활성화. 행 선택 시 실패한 검사·FMU 로그 건수·저장 위치를 상세 패널에
+  표시. `ScenarioProposalsDialog`와 역할이 다름(그건 `plan()`이 XML만
+  보고 만든 판정 기준 없는 제안용, 이건 **사용자가 이미 쓴 판정 기준 있는**
+  시나리오 묶음용).
+- 진입점 두 곳: `ScenarioDialog`에 "여러 시나리오 실행..." 버튼(제안 보기/
+  에이전트 요청 버튼 옆), `MainWindow` 툴바에도 같은 액션(FMU 열자마자
+  접근 가능).
+- `tests/test_scenario_agent.py`에 `run_many`/`format_batch_report`/CLI
+  `batch` 테스트 8개 추가(합격·불합격·판정없음·실행불가 혼합, 출력 폴더
+  구조, 취소, FMU 자체가 안 읽히는 경우, 디렉터리 확장) → 43개.
+  `tests/test_pid_demo.py`에 실제 PID 7개로 집계·폴더 구조 고정 테스트
+  2개 추가 → 11개. `tests/test_scenario_batch_gui.py` (신규, 8개): 목록
+  구성·중복 제거·제거/초기화, FMU 없을 때 거부, **실제 FMU로 4가지 결과
+  섞어서** 집계·상세 패널·폴더 구조 확인, 선택 실행만 적용, 보고서 저장,
+  취소, 두 진입점 연결까지 검증.
+- `docs/scenario-runner-ko.md`, `docs/agent-integration-ko.md`에 사용법과
+  실측 결과 반영.
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_gui.py
+tests/test_scenario_agent.py tests/test_pid_demo.py tests/test_agent_chat.py
+tests/test_scenario_batch_gui.py -q` → **104 passed**(기존 87 + 신규 17).
+`scripts/check_gui.py`로 `scenario_batch.py` import 체인까지 실제 창 생성
+검증.
+
+미완료: 이번에도 **커밋/푸시는 안 했다** — 요청 시 진행.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

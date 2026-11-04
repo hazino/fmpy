@@ -3,8 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from fmpy.scenario_agent import (TOOLS, authoring_context, call, describe_fmu, main, plan,
-                                 review, run, schema, structure, validate)
+from fmpy.scenario_agent import (TOOLS, authoring_context, call, describe_fmu, format_batch_report,
+                                 main, plan, review, run, run_many, schema, structure, validate)
 from fmpy.scenario_schema import ERROR_CODES, scenario_schema
 
 
@@ -328,3 +328,118 @@ def test_review_flags_an_input_nothing_declares_a_dependency_on(root_dir):
 def test_review_is_reachable_from_the_command_line(feedthrough, capsys):
     assert main(["review", "--fmu", feedthrough]) == 0
     assert "findings" in json.loads(capsys.readouterr().out)
+
+
+def write_scenario(path, scenario):
+    path.write_text(json.dumps(scenario), encoding="utf-8")
+    return path
+
+
+def test_run_many_counts_every_outcome_and_keeps_going_past_a_bad_one(feedthrough, tmp_path):
+    passing = write_scenario(tmp_path / "01_passing.json", good())
+    failing_scenario = good()
+    failing_scenario["checks"][0]["max"] = 1.0
+    failing = write_scenario(tmp_path / "02_failing.json", failing_scenario)
+    no_verdict_scenario = {k: v for k, v in good().items() if k != "checks"}
+    no_verdict = write_scenario(tmp_path / "03_no_verdict.json", no_verdict_scenario)
+    broken_scenario = good()
+    broken_scenario["outputs"] = ["nope"]
+    broken = write_scenario(tmp_path / "04_broken.json", broken_scenario)
+    missing = tmp_path / "05_missing.json"  # never written
+
+    seen = []
+    envelope = run_many(feedthrough, [passing, failing, no_verdict, broken, missing],
+                        on_progress=lambda i, e: seen.append((i, e["id"])))
+    assert envelope["ok"]
+    assert envelope["summary"] == {"total": 5, "passed": 1, "failed": 1, "no_verdict": 1,
+                                   "error": 2}
+    # Every scenario built from good() keeps its "name": "demo"; only the
+    # unreadable file falls back to its filename stem.
+    assert seen == [(0, "demo"), (1, "demo"), (2, "demo"), (3, "demo"), (4, "05_missing")]
+    by_path = {entry["path"]: entry for entry in envelope["results"]}
+    assert by_path[str(passing)]["passed"] is True
+    assert by_path[str(failing)]["passed"] is False
+    assert by_path[str(no_verdict)]["passed"] is None and by_path[str(no_verdict)]["ok"]
+    assert by_path[str(broken)]["ok"] is False
+    assert by_path[str(broken)]["errors"][0]["code"] == "unknown_variable"
+    assert by_path[str(missing)]["errors"][0]["code"] == "scenario_unreadable"
+    assert all("samples" not in entry for entry in envelope["results"])
+
+
+def test_run_many_writes_one_subdirectory_per_scenario_plus_a_summary(feedthrough, tmp_path):
+    scenario_dir = tmp_path / "scenarios"
+    scenario_dir.mkdir()
+    write_scenario(scenario_dir / "a.json", good())
+    write_scenario(scenario_dir / "b.json", good())
+    output = tmp_path / "out"
+
+    envelope = run_many(feedthrough, sorted(scenario_dir.glob("*.json")), output=str(output))
+    assert envelope["summary"]["passed"] == 2
+    assert (output / "a" / "report.json").is_file()
+    assert (output / "b" / "results.csv").is_file()
+    written = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert written["summary"] == envelope["summary"]
+
+
+def test_run_many_cancellation_stops_before_touching_the_remaining_files(feedthrough, tmp_path):
+    scenario_dir = tmp_path / "scenarios"
+    scenario_dir.mkdir()
+    write_scenario(scenario_dir / "a.json", good())
+    write_scenario(scenario_dir / "b.json", good())
+    paths = sorted(scenario_dir.glob("*.json"))
+    calls = {"n": 0}
+
+    def cancelled():
+        calls["n"] += 1
+        return calls["n"] > 1  # let the first through, cancel before the second
+
+    envelope = run_many(feedthrough, paths, cancelled=cancelled)
+    assert envelope["summary"] == {"total": 2, "passed": 1, "failed": 0, "no_verdict": 0,
+                                   "error": 1}
+    assert envelope["results"][1]["errors"][0]["code"] == "cancelled"
+
+
+def test_run_many_refuses_an_unreadable_fmu_up_front(tmp_path):
+    envelope = run_many(tmp_path / "missing.fmu", [])
+    assert not envelope["ok"] and envelope["errors"][0]["code"] == "fmu_unreadable"
+
+
+def test_format_batch_report_is_one_line_per_scenario_plus_counts():
+    summary = {"total": 2, "passed": 1, "failed": 1, "no_verdict": 0, "error": 0}
+    results = [{"id": "a", "ok": True, "passed": True},
+              {"id": "b", "ok": True, "passed": False,
+               "report": {"summary": {"failed_checks": ["y"]}}}]
+    text = format_batch_report(summary, results)
+    assert text.splitlines()[0] == "2개 중 합격 1 · 불합격 1 · 판정 기준 없음 0 · 실행 불가 0"
+    assert "| a | 합격 |  |" in text
+    assert "| b | 불합격 | 실패한 검사: y |" in text
+
+
+def test_batch_tool_is_reachable_through_call_and_tools_manifest(feedthrough, tmp_path):
+    write_scenario(tmp_path / "a.json", good())
+    assert any(t["name"] == "batch" for t in TOOLS)
+    envelope = call("batch", fmu=feedthrough, scenario_paths=[str(tmp_path / "a.json")])
+    assert envelope["ok"] and envelope["summary"]["passed"] == 1
+
+
+def test_cli_batch_expands_a_directory_reports_and_signals_through_exit_code(
+        feedthrough, tmp_path, capsys):
+    scenario_dir = tmp_path / "scenarios"
+    scenario_dir.mkdir()
+    write_scenario(scenario_dir / "a.json", good())
+    failing_scenario = good()
+    failing_scenario["checks"][0]["max"] = 1.0
+    write_scenario(scenario_dir / "b.json", failing_scenario)
+
+    assert main(["batch", "--fmu", feedthrough, "--scenarios", str(scenario_dir)]) == 1
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["summary"] == {"total": 2, "passed": 1, "failed": 1, "no_verdict": 0,
+                                   "error": 0}
+
+    assert main(["batch", "--fmu", feedthrough, "--scenarios", str(scenario_dir),
+                 "--report"]) == 1
+    report = capsys.readouterr().out
+    assert report.startswith("2개 중 합격 1")
+
+    write_scenario(scenario_dir / "c.json", {"not": "a scenario"})
+    assert main(["batch", "--fmu", feedthrough, "--scenarios", str(scenario_dir)]) == 2

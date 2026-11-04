@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from fmpy.scenario_agent import plan, review, run
+from fmpy.scenario_agent import plan, review, run, run_many
 
 ROOT = Path(__file__).parent.parent / "examples" / "agent" / "pid_demo"
 FMU = ROOT / "PID.fmu"
@@ -100,3 +100,31 @@ def test_07_invalid_anti_windup_bounds_are_refused_at_initialization():
     error = result["errors"][0]
     assert error["code"] == "fmi_call_failed"
     assert "fmi2ExitInitializationMode" in error["message"]
+
+
+def test_batch_runs_all_seven_scenarios_and_tallies_the_real_mix_of_outcomes():
+    """02 has no checks (observational) and 07 is deliberately refused at init --
+    see their own descriptions. The other five pass. This locks that mix in."""
+    paths = sorted(SCENARIOS.glob("*.json"))
+    assert len(paths) == 7
+    envelope = run_many(str(FMU), paths)
+    assert envelope["ok"]
+    assert envelope["summary"] == {"total": 7, "passed": 5, "failed": 0, "no_verdict": 1,
+                                   "error": 1}
+    by_id = {entry["id"]: entry for entry in envelope["results"]}
+    assert by_id["measurement_step_derivative_kick"]["passed"] is None
+    assert by_id["invalid_integrator_bounds_fails_init"]["ok"] is False
+    assert by_id["invalid_integrator_bounds_fails_init"]["errors"][0]["code"] == "fmi_call_failed"
+    assert "실행 불가 1" in envelope["report"]
+
+
+def test_batch_writes_a_results_folder_per_scenario_except_the_one_that_fails_to_run(tmp_path):
+    paths = sorted(SCENARIOS.glob("*.json"))
+    envelope = run_many(str(FMU), paths, output=tmp_path)
+    for path in paths:
+        stem = path.stem
+        if "invalid_integrator_bounds" in stem:
+            assert not (tmp_path / stem).exists()
+        else:
+            assert (tmp_path / stem / "report.json").is_file()
+    assert (tmp_path / "summary.json").is_file()

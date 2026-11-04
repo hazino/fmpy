@@ -12,6 +12,7 @@ object to stdout::
     python -m fmpy.scenario_agent context  --fmu model.fmu
     python -m fmpy.scenario_agent validate --fmu model.fmu --scenario s.json
     python -m fmpy.scenario_agent run      --fmu model.fmu --scenario - --output out
+    python -m fmpy.scenario_agent batch    --fmu model.fmu --scenarios scenarios/ --output out --report
 
 Exit codes: 0 the tool succeeded, 1 the test failed (``passed`` is false),
 2 the tool reported problems (``ok`` is false).
@@ -262,6 +263,100 @@ def run(fmu, scenario, output=None, include_samples=0, debug_logging=False):
     return envelope
 
 
+def _summarize_batch(results):
+    """Count outcomes across a batch: passed / failed / no verdict / could not run."""
+    counts = {"total": len(results), "passed": 0, "failed": 0, "no_verdict": 0, "error": 0}
+    for entry in results:
+        if not entry.get("ok"):
+            counts["error"] += 1
+        elif entry.get("passed") is True:
+            counts["passed"] += 1
+        elif entry.get("passed") is False:
+            counts["failed"] += 1
+        else:
+            counts["no_verdict"] += 1
+    return counts
+
+
+def run_many(fmu, scenario_paths, output=None, include_samples=0, debug_logging=False,
+            on_progress=None, cancelled=None):
+    """Validate and run several scenario files against the same FMU. One summary.
+
+    Each path is read, validated and run independently -- one bad or failing
+    scenario does not stop the rest. ``output``, given, gets one subdirectory
+    per scenario (named after its file stem) plus a ``summary.json`` with the
+    counts and every per-scenario result (without sample tables).
+
+    ``on_progress(index, entry)``, if given, is called after each scenario
+    with its 0-based position and its result entry, for a caller that wants to
+    show progress before the whole batch finishes. ``cancelled()``, checked
+    before each scenario, stops the remaining ones without running them.
+    """
+    tool = "batch"
+    md, failure = _model_description(tool, fmu)
+    if failure:
+        return failure
+
+    results = []
+    for index, path in enumerate(scenario_paths):
+        path = Path(path)
+        entry = {"id": path.stem, "path": str(path)}
+        if cancelled is not None and cancelled():
+            entry.update(ok=False, passed=None,
+                        errors=[{"code": "cancelled",
+                                "message": "Skipped: the batch was cancelled."}])
+            results.append(entry)
+            if on_progress is not None:
+                on_progress(index, entry)
+            continue
+        try:
+            scenario = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as error:
+            entry.update(ok=False, passed=None,
+                        errors=[{"code": "scenario_unreadable", "message": str(error)}])
+            results.append(entry)
+            if on_progress is not None:
+                on_progress(index, entry)
+            continue
+        entry["id"] = scenario.get("name") or path.stem
+        scenario_output = str(Path(output) / path.stem) if output is not None else None
+        outcome = run(fmu, scenario, output=scenario_output, include_samples=include_samples,
+                     debug_logging=debug_logging)
+        entry.update(outcome)
+        results.append(entry)
+        if on_progress is not None:
+            on_progress(index, entry)
+
+    summary = _summarize_batch(results)
+    light_results = [{k: v for k, v in entry.items() if k != "samples"} for entry in results]
+    if output is not None:
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps({"summary": summary, "results": light_results}, indent=2,
+                      ensure_ascii=False), encoding="utf-8")
+    return _ok(tool, fmu=str(fmu), summary=summary, results=light_results,
+               report=format_batch_report(summary, light_results))
+
+
+def format_batch_report(summary, results):
+    """A short Markdown table: one line per scenario, counts up top."""
+    lines = [f"{summary['total']}개 중 합격 {summary['passed']} · 불합격 {summary['failed']} · "
+            f"판정 기준 없음 {summary['no_verdict']} · 실행 불가 {summary['error']}",
+            "", "| 시나리오 | 결과 | 비고 |", "|---|---|---|"]
+    for entry in results:
+        if not entry.get("ok"):
+            verdict = "중지" if entry["errors"][0]["code"] == "cancelled" else "오류"
+            note = entry["errors"][0]["message"]
+        else:
+            passed = entry.get("passed")
+            verdict = "합격" if passed is True else "불합격" if passed is False else "판정 기준 없음"
+            failed = ((entry.get("report") or {}).get("summary") or {}).get("failed_checks") or []
+            note = f"실패한 검사: {', '.join(failed)}" if failed else ""
+        lines.append(f"| {entry['id']} | {verdict} | {note} |")
+    return "\n".join(lines)
+
+
 def schema():
     """Return the scenario JSON Schema and the runner's capabilities."""
     return _ok("schema", schema=scenario_schema(), schema_id=SCHEMA_ID,
@@ -325,11 +420,26 @@ TOOLS = [
                                                        "description": "Inline at most this many "
                                                                       "recorded rows"},
                                    "debug_logging": {"type": "boolean"}}}},
+    {"name": "batch",
+     "description": "Validate and run several scenario files against the same FMU. Returns a "
+                    "count of passed/failed/no-verdict/could-not-run and a short Markdown "
+                    "report, one line per scenario; one bad scenario does not stop the rest.",
+     "parameters": {"type": "object", "required": ["fmu", "scenario_paths"],
+                    "additionalProperties": False,
+                    "properties": {"fmu": {"type": "string"},
+                                   "scenario_paths": {"type": "array",
+                                                      "items": {"type": "string"},
+                                                      "description": "Paths to scenario JSON files"},
+                                   "output": {"type": "string",
+                                              "description": "Directory for one subfolder per "
+                                                             "scenario plus summary.json"},
+                                   "include_samples": {"type": "integer", "minimum": 0},
+                                   "debug_logging": {"type": "boolean"}}}},
 ]
 
 _DISPATCH = {"context": authoring_context, "describe": describe_fmu, "structure": structure,
              "plan": plan, "review": review, "schema": schema, "validate": validate,
-             "run": run}
+             "run": run, "batch": run_many}
 
 
 def call(tool, **arguments):
@@ -350,22 +460,38 @@ def _read_scenario(source):
     return json.loads(text)
 
 
+def _expand_scenario_paths(paths):
+    """A directory argument expands to its *.json files, sorted; a file passes through."""
+    expanded = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            expanded.extend(sorted(path.glob("*.json")))
+        else:
+            expanded.append(path)
+    return [str(p) for p in expanded]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("tool", choices=["tools", "schema", "describe", "structure", "plan",
-                                         "review", "context", "validate", "run"])
+                                         "review", "context", "validate", "run", "batch"])
     parser.add_argument("--fmu")
     parser.add_argument("--scenario", help="Path to the scenario JSON, or - for stdin")
+    parser.add_argument("--scenarios", nargs="+",
+                        help="batch: scenario JSON files, or directories to glob *.json from")
     parser.add_argument("--output", help="Directory to write results into")
     parser.add_argument("--samples", type=int, default=0,
                         help="Inline at most this many recorded rows")
     parser.add_argument("--debug-logging", action="store_true")
+    parser.add_argument("--report", action="store_true",
+                        help="batch: print the Markdown report instead of the JSON envelope")
     args = parser.parse_args(argv)
 
     arguments = {}
     if args.tool in ("describe", "structure", "plan", "review", "context", "validate",
-                     "run"):
+                     "run", "batch"):
         if not args.fmu:
             parser.error(f"{args.tool} requires --fmu")
         arguments["fmu"] = args.fmu
@@ -381,11 +507,22 @@ def main(argv=None):
     if args.tool == "run":
         arguments.update(output=args.output, include_samples=args.samples,
                          debug_logging=args.debug_logging)
+    if args.tool == "batch":
+        if not args.scenarios:
+            parser.error("batch requires --scenarios")
+        arguments.update(scenario_paths=_expand_scenario_paths(args.scenarios),
+                         output=args.output, include_samples=args.samples,
+                         debug_logging=args.debug_logging)
 
     envelope = call(args.tool, **arguments)
-    print(json.dumps(envelope, ensure_ascii=False, indent=2))
+    if args.tool == "batch" and args.report and envelope["ok"]:
+        print(envelope["report"])
+    else:
+        print(json.dumps(envelope, ensure_ascii=False, indent=2))
     if not envelope["ok"]:
         return 2
+    if args.tool == "batch":
+        return 2 if envelope["summary"]["error"] else (1 if envelope["summary"]["failed"] else 0)
     return 1 if envelope.get("passed") is False else 0
 
 

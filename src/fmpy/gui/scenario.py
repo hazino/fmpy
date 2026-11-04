@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineE
 
 from fmpy import read_model_description
 from fmpy.scenario import run_scenario, validate_scenario, write_results
+from .agent_chat import AgentChatDialog
+from .scenario_batch import ScenarioBatchDialog
 from .scenario_proposals import ScenarioProposalsDialog
 from .scenario_results import ScenarioResults
 
@@ -74,6 +76,17 @@ class ScenarioDialog(QDialog):
             "선택한 FMU가 선언한 구조에서 시나리오 후보를 뽑아 보여줍니다. JSON 로드는 필요 없습니다.")
         self.proposalsButton.clicked.connect(self.openProposals)
         proposalsRow.addWidget(self.proposalsButton)
+        self.agentChatButton = QPushButton("에이전트에게 요청...")
+        self.agentChatButton.setToolTip(
+            "자연어로 시나리오를 요청합니다. 모델(Ollama/Claude)은 JSON만 만들고, "
+            "검증과 실행은 항상 이 코드가 직접 합니다.")
+        self.agentChatButton.clicked.connect(self.openAgentChat)
+        proposalsRow.addWidget(self.agentChatButton)
+        self.batchButton = QPushButton("여러 시나리오 실행...")
+        self.batchButton.setToolTip(
+            "직접 쓴 시나리오 JSON 여러 개를 골라 한 번에 돌리고 합격/불합격을 종합합니다.")
+        self.batchButton.clicked.connect(self.openBatch)
+        proposalsRow.addWidget(self.batchButton)
         layout.addLayout(proposalsRow)
         layout.addWidget(QLabel("JSON 로드 시 메인 재생에 적용됩니다. 창을 닫아도 유지되며, 실행 조건은 JSON을 따릅니다."))
         self.tabs = QTabWidget()
@@ -118,6 +131,18 @@ class ScenarioDialog(QDialog):
             self.status.setText("먼저 FMU를 선택하세요.")
             return
         ScenarioProposalsDialog(self.fmuPath.text(), self).exec()
+
+    def openAgentChat(self):
+        if not self.fmuPath.text():
+            self.status.setText("먼저 FMU를 선택하세요.")
+            return
+        AgentChatDialog(self.fmuPath.text(), self).exec()
+
+    def openBatch(self):
+        if not self.fmuPath.text():
+            self.status.setText("먼저 FMU를 선택하세요.")
+            return
+        ScenarioBatchDialog(self.fmuPath.text(), self).exec()
 
     def chooseScenario(self):
         path, _ = QFileDialog.getOpenFileName(self, "시나리오 로드", self.scenarioPath.text(), "JSON (*.json)")

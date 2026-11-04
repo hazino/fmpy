@@ -4,7 +4,10 @@ This is the actual wiring for the loop described in docs/agent-integration-ko.md
 a model only ever produces scenario JSON text; every native FMU call still goes
 through fmpy.scenario_agent, never through the model. Nothing here executes
 code the model wrote, and nothing here is optional plumbing -- it is the
-real loop, run against a real local model.
+real loop, run against a real local model. The loop itself lives in
+fmpy.scenario_backends.run_with_ollama; this is a thin CLI around it. The
+same function backs the "에이전트에게 요청..." chat dialog in the GUI
+(fmpy.gui.agent_chat).
 
     python examples/agent/ollama_loop.py --fmu model.fmu --request "..." \
         [--model qwen2.5] [--host http://localhost:11434] [--max-attempts 4] \
@@ -23,101 +26,9 @@ Exit codes match fmpy.scenario_agent.main: 0 ok and passed (or no checks),
 
 import argparse
 import json
-import re
 import sys
-import urllib.error
-import urllib.request
 
-from fmpy.scenario_agent import authoring_context, run, validate
-
-PROMPT_TEMPLATE = """You write test scenarios for an FMI 2.0 Co-Simulation FMU as a single JSON object.
-
-The FMU's interface (only these variables exist; use no others):
-{variables}
-
-The scenario JSON must have this shape (only use these top-level keys):
-{example}
-
-Rules:
-- "initial" may only set names from this list: {writable_initial}
-- any "set" (in "events" or "rules") may only use names from this list: {writable_runtime}
-- "outputs" may only list names from this list: {readable}
-- stop_time and every event "time" must be a multiple of step_size
-- reply with ONLY the JSON object, no explanation, no markdown fences
-
-Task: {request}
-"""
-
-FIX_TEMPLATE = """Your last JSON was rejected. Fix ONLY the listed problems and reply with the
-corrected JSON object, still following all the rules above. Problems:
-{errors}
-
-Your last JSON was:
-{previous}
-"""
-
-
-def ollama_generate(host, model, prompt):
-    """One call to Ollama's completion endpoint, forcing JSON-shaped output."""
-    body = json.dumps({"model": model, "prompt": prompt, "format": "json",
-                       "stream": False, "options": {"temperature": 0.2}}).encode()
-    request = urllib.request.Request(f"{host}/api/generate", data=body,
-                                     headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return json.loads(response.read())["response"]
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Could not reach Ollama at {host}: {error}") from error
-
-
-def extract_json(text):
-    """Ollama's format=json should return a bare object, but strip fences just in case."""
-    text = text.strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    return json.loads(match.group(0) if match else text)
-
-
-def generate_scenario(fmu, request, host, model, max_attempts, log):
-    """Prompt-and-validate loop. Returns a validated scenario or None."""
-    context = authoring_context(fmu)
-    if not context["ok"]:
-        log(f"Cannot describe {fmu}: {context['errors'][0]['message']}")
-        return None
-    interface = context["interface"]
-    prompt = PROMPT_TEMPLATE.format(
-        variables="\n".join(f"- {v['name']} ({v['type']}, {v['causality']}): "
-                            f"{v['description'] or 'no description'}"
-                            for v in interface["variables"]),
-        example=json.dumps(context["example"]),
-        writable_initial=interface["writable_initial"],
-        writable_runtime=interface["writable_runtime"],
-        readable=interface["readable"],
-        request=request)
-
-    scenario, raw = None, None
-    for attempt in range(1, max_attempts + 1):
-        log(f"[attempt {attempt}/{max_attempts}] asking {model}...")
-        try:
-            raw = ollama_generate(host, model, prompt)
-        except RuntimeError as error:
-            log(str(error))
-            return None
-        try:
-            scenario = extract_json(raw)
-        except (json.JSONDecodeError, AttributeError) as error:
-            log(f"  model did not return parseable JSON ({error}); retrying")
-            prompt = FIX_TEMPLATE.format(errors=f"- not valid JSON: {error}", previous=raw)
-            continue
-        checked = validate(fmu, scenario)
-        if checked["ok"]:
-            log(f"  valid after {attempt} attempt(s)")
-            return scenario
-        problems = "\n".join(f"- {e['path'] or '(top level)'}: {e['message']}"
-                             for e in checked["errors"])
-        log(f"  rejected:\n{problems}")
-        prompt = FIX_TEMPLATE.format(errors=problems, previous=json.dumps(scenario))
-    log(f"Gave up after {max_attempts} attempt(s).")
-    return None
+from fmpy.scenario_backends import run_with_ollama
 
 
 def main(argv=None):
@@ -134,17 +45,9 @@ def main(argv=None):
 
     log = (lambda message: None) if args.quiet else (lambda message: print(message, file=sys.stderr))
 
-    scenario = generate_scenario(args.fmu, args.request, args.host, args.model,
-                                 args.max_attempts, log)
-    if scenario is None:
-        print(json.dumps({"ok": False, "tool": "ollama_loop",
-                          "errors": [{"code": "no_valid_scenario",
-                                     "message": "The model never produced a scenario that "
-                                                "validated."}]}, indent=2, ensure_ascii=False))
-        return 2
-
-    result = run(args.fmu, scenario, output=args.output)
-    print(json.dumps({**result, "generated_scenario": scenario}, indent=2, ensure_ascii=False))
+    result = run_with_ollama(args.fmu, args.request, args.host, args.model,
+                             args.max_attempts, args.output, on_log=log)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     if not result["ok"]:
         return 2
     return 1 if result.get("passed") is False else 0

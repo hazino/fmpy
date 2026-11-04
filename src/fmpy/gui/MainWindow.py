@@ -292,6 +292,15 @@ class MainWindow(QMainWindow):
         self.clearScenarioAction = self.ui.toolBar.addAction("시나리오 해제")
         self.clearScenarioAction.setEnabled(False)
         self.clearScenarioAction.triggered.connect(self.clearScenario)
+        self.agentChatAction = self.ui.toolBar.addAction("에이전트에게 요청...")
+        self.agentChatAction.setToolTip(
+            "자연어로 시나리오를 요청합니다 (Ollama/Claude). 모델은 JSON만 만들고, "
+            "검증과 실행은 항상 fmpy 코드가 직접 합니다.")
+        self.agentChatAction.triggered.connect(self.openAgentChat)
+        self.batchAction = self.ui.toolBar.addAction("여러 시나리오 실행...")
+        self.batchAction.setToolTip(
+            "직접 쓴 시나리오 JSON 여러 개를 골라 한 번에 돌리고 합격/불합격을 종합합니다.")
+        self.batchAction.triggered.connect(self.openBatch)
         self.ui.actionBuildPlatformBinary.triggered.connect(self.buildPlatformBinary)
 
         self.ui.actionValidateFMU.triggered.connect(self.validateFMU)
@@ -436,6 +445,22 @@ class MainWindow(QMainWindow):
             self.scenarioDialog.fmuPath.setText(str(self.filename))
             self.scenarioDialog.validate()
         self.scenarioDialog.exec()
+
+    def openAgentChat(self):
+        from .agent_chat import AgentChatDialog
+
+        if self.simulationThread is not None and self.simulationThread.isRunning():
+            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
+            return
+        AgentChatDialog(self.filename, self).exec()
+
+    def openBatch(self):
+        from .scenario_batch import ScenarioBatchDialog
+
+        if self.simulationThread is not None and self.simulationThread.isRunning():
+            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
+            return
+        ScenarioBatchDialog(self.filename, self).exec()
 
     def showScenarioResult(self, result):
         import numpy as np
