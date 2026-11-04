@@ -2,6 +2,331 @@
 
 마지막 기록: 2026-11-04 (Asia/Seoul)
 
+## 최신 변경: 에이전트 연동 구조와 FMU 구조 기반 시나리오 도출 (2026-11-04, Claude)
+
+### 사용자 요청
+
+1. "에이전트를 연동할 수 있는 구조로 잡아달라."
+2. "지금 시나리오 구축된 게 그 방향과 맞는지 확인해달라."
+3. "기존 CSV 로드 기능과 시나리오 JSON 기능의 차별점을 확인해달라."
+4. "FMU를 로드한 뒤 에이전트가 실행 구조나 원본 코드를 보고 시나리오 계획을
+   추출할 수 있는지, 실제 테스트에 돌려볼 시나리오까지 뽑을 수 있는지."
+
+### 2번에 대한 진단 (고치기 전 상태)
+
+맞는 부분: JSON만이 인터페이스이고 자연어 해석·임의 코드 실행이 없다. 네이티브
+실행 전에 검증한다. 고정 격자라 재현된다. 판정(`passed`)과 실행 성공을 구분한다.
+
+맞지 않던 부분 — 이번에 고친 것:
+
+- 검증 오류가 문장 하나뿐이고 위치·코드가 없으며 **첫 오류에서 멈췄다.**
+  프로그램이 고치려면 왕복이 오류 개수만큼 필요했다.
+- 형식의 기계 판독 계약(JSON Schema, 능력 선언)이 없어 산문 문서를 추측해야 했다.
+- 결과가 최대 100만 행 표라서 호출자가 읽을 수 없었다. 요약이 없었다.
+- 안정된 프로그램 진입점이 없었다. CLI가 `"Scenario is valid"` 같은 문장을
+  보고서 JSON과 같은 stdout에 섞어 냈다.
+- `fired_rules`가 인덱스뿐이어서 왜 발생했는지 알 수 없었다. 항목에 `id`나
+  설명을 달 수 없었고(`fields()`가 미지 키를 거부) 의도를 기록할 자리가 없었다.
+
+### 추가·변경한 파일
+
+- `src/fmpy/scenario.py` (대폭 수정)
+  - `ScenarioError`(code/path/extra), `ScenarioValidationError`(전체 목록),
+    경로 스택을 가진 `Problems` 수집기. 검증이 **독립적인 문제를 한 번에 전부**
+    보고한다. 경로 예: `events[2].set.u`, `rules[0].when.op`.
+    변수명 오타에는 `difflib` 후보를 `candidates`로 붙인다.
+  - 선택 메타데이터: 최상위 `name`/`description`/`metadata`,
+    `events`/`rules`/`checks` 항목의 `id`/`description`. `id`는 배열 내 유일.
+  - 보고서 확장: `summary`(출력별 min/max와 그 시각, 첫·끝·평균, Boolean/String은
+    변화 시점과 분포), `rule_events`(발생 시각·조건·`trigger.actual`·적용값·중지),
+    `checks[]`에 `margin`/`worst`/`worst_time`/`failure_count`, `fmu_log`.
+  - `LogCapture`: FMU 자체 로그 메시지를 최대 200건 수집. 네이티브 로거 프록시로
+    varargs를 포맷해 받는다. 기존에는 stdout으로만 나가 GUI에서 안 보였다.
+  - 일괄 I/O: 출력을 FMI 종류별로 묶어 샘플당 변수 개수만큼 하던 FFI 호출을
+    종류 개수만큼으로 줄였다. 규칙 변수는 이벤트 적용 **후** 별도로 읽어
+    기존 평가 순서를 유지한다.
+  - `fmi2Discard` + `fmi2Terminated`를 조기 종료로 처리
+    (`termination: "fmu_terminated"`). FMPy 본체 `simulate_fmu`와 같은 방식.
+    이전에는 `FMICallException`으로 터져 수집한 결과가 전부 버려졌다.
+  - `instantiate` 실패 시 `freeLibrary()`를 호출한다. 안 하면 Windows에서 DLL이
+    임시 폴더를 잠가 `PermissionError`가 진짜 원인을 덮었다.
+  - Boolean 출력을 Python `bool`로 보고한다(이전 1/0). **동작 변경**: CSV에
+    `True`/`False`로 적힌다. 시나리오의 Boolean 표기와 일치시킨 것이다.
+  - `write_results()`, `inspect_fmu()` 분리. CLI에 `--debug-logging` 추가.
+    검증 실패 시 JSON 오류 목록을 출력. `FMICallException`도 잡아 처리.
+- `src/fmpy/scenario_schema.py` (신규): 시나리오 v1 JSON Schema(draft 2020-12),
+  `CAPABILITIES`(지원/미지원/한계/의미 규칙), `ERROR_CODES`(코드별 수정 방법).
+- `src/fmpy/scenario_plan.py` (신규): `model_structure()`가 FMU 선언 구조를,
+  `propose_scenarios()`가 돌려볼 시나리오를 도출. `archive_contents()`가
+  `sources/`·`documentation/`·`resources/` 목록을 보고.
+- `src/fmpy/scenario_agent.py` (신규): JSON in/out 도구 계층.
+  `tools`/`schema`/`describe`/`structure`/`plan`/`review`/`context`/`validate`/`run`.
+  `TOOLS`는 function-calling 형식 매니페스트. CLI는 stdout에 JSON 객체 하나만
+  출력하고 종료 코드로 0 성공 / 1 불합격 / 2 문제 보고를 구분. `--scenario -`로
+  표준 입력 지원.
+- `src/fmpy/gui/scenario.py`: 저장을 `write_results()`로 통일(중복 제거).
+  완료 상태줄에 FMU 오류·경고 건수와 조기 종료를 표시. 보고서 탭은 report를
+  그대로 덤프하므로 `summary`/`rule_events`/`fmu_log`가 자동으로 보인다.
+- `examples/agent/plan_and_run.py` (신규): 모델 없이 `plan` → `run` 루프를
+  그대로 실행해 의존 관계·요약·부족한 도메인 정보를 출력.
+- `docs/agent-integration-ko.md` (신규): 도구, 에이전트 루프, FMU에서 뽑을 수
+  있는 것/없는 것, 원본 소스 코드의 한계, `plan` 제안 종류, 보고서 읽는 법,
+  **CSV 입력 대비 차별점 비교 표**, 아직 없는 것.
+- `docs/scenario-runner-ko.md`: 새 보고서 항목, 종료 이유, 메타데이터, 구조화된
+  검증 오류, Boolean 표기 변경, `--debug-logging`, 새 문서 링크 반영.
+- `pyproject.toml`: dev 의존성에 `jsonschema` 추가(스키마와 검증기 교차 확인용.
+  실행기 자체는 쓰지 않는다. 현재 환경에는 nbformat 경유로 이미 설치돼 있다).
+- `tests/test_scenario.py`: 구조화된 오류, 다중 오류, 라벨 유일성, 로그 수집과
+  네이티브 로거 배선, 요약, Boolean 타입, 판정 여유, 규칙 발생 근거, FMU 조기
+  종료 테스트 추가 (13 → 27개).
+- `tests/test_scenario_agent.py` (신규, 41개): 매니페스트, 오류 봉투, describe의
+  쓰기/읽기 분리, context 자급성, 다중 오류 경로, run 요약·산출물, CLI 종료 코드,
+  스키마와 검증기 **교차 확인**, structure 의존 그래프, plan 제안의 유효성과
+  실제 실행, plan이 판정을 만들지 않는다는 보장.
+
+### 3번 답: CSV 입력과 시나리오 JSON의 차별점
+
+`simulate_fmu(input=...)`(`fmpy.util.read_csv` + `fmpy.simulation.Input`)은
+**자극 표**다. 모든 열을 float로 읽고(String 입력 불가), 연속 Real은 **선형 보간**,
+discrete/tunable은 hold하며 시간 이벤트를 만든다. FMI 1/2/3과 ME/CS를 지원하고,
+판정·조건 반응·사전 검증·조기 종료가 없다.
+
+시나리오 JSON은 **시험 명세**다. 선언 타입대로 검증하고, 파라미터까지 초기화하며,
+조건 반응(`rules`)과 합격 판정(`checks`)을 담고, 네이티브 실행 전에 전부 검증하고,
+시나리오·보고서·결과를 한 폴더에 남긴다. 대신 FMI 2.0 CS 전용이고 격자가 고정이며
+**보간이 없다**. 전체 비교 표는 `docs/agent-integration-ko.md`에 있다.
+
+→ **램프 입력은 현재 CSV 경로만 가능하다.** 시나리오 형식의 가장 큰 기능적 구멍이고
+실제 장비 시험에서 가장 먼저 필요해질 항목이다.
+
+### 4번 답: FMU에서 시나리오를 뽑을 수 있는가
+
+**선언 구조로는 된다.** `modelDescription.xml`에서 다음을 꺼내 쓴다:
+ModelStructure의 **출력↔입력 의존 관계**와 `dependenciesKind`, 연속 상태·미분·
+이벤트 지시자 수, `typeDefinitions`(quantity·단위·Enumeration 항목 이름과 값),
+`unitDefinitions`, `logCategories`, `defaultExperiment`, CS 능력 플래그,
+`variableNamingConvention`(structured면 이름 첫 구간이 하위 시스템).
+FMI 2.0의 구분도 보존한다: `depends_on`이 `null`이면 속성 생략(= 모든 변수에
+의존 가능), 빈 배열이면 입력에 직접 의존하지 않음(= 내부 상태에서 나옴).
+
+**원본 소스 코드는 의도적으로 파싱하지 않는다.** FMU는 `sources/`에 C를 담을 수
+있고(참조 FMU 7개, Drivetrain 122개) `structure` 도구가 목록을 보고하지만,
+(a) 상용 FMU는 대개 바이너리만 담고 FMPy에 제거 기능(`remove_source_code`)도 있어
+정작 중요한 FMU에서 무너진다, (b) 도구 생성 코드는 솔버 글루와 이름이 바뀐
+변수뿐이어서 "무엇이어야 하는가"가 아니라 "무엇을 하는가"만 읽힌다, (c) 사용자는
+자기 소프트웨어를 포팅하는 쪽이라 원본과 요구사항이 FMU 밖에 이미 있다.
+특정 거동 추적에는 유효하지만 시험 계획의 출처로 삼지 않는다. 사람이 쓴 설명이
+있을 수 있는 `documentation/`과 FMU가 읽는 `resources/`는 목록으로 함께 보고한다.
+
+**판정은 뽑을 수 없다.** FMU는 자기가 무엇을 해야 하는지 말하지 않고, 선언 min/max는
+유효 범위이지 합격 기준이 아니다. 그래서 `plan` 제안에는 `checks`가 **없고**
+각 제안의 `needs_from_domain`에 받아올 항목을 적는다. 실행은 되지만 `passed`는
+`null`이다.
+
+`plan`이 만드는 제안: `smoke`(모든 입력 고정, 선언 출력 전부 기록),
+`step-<입력>`(선언 하한→상한 계단 변경, 그 입력에 의존한다고 선언된 출력만 기록),
+`dependency-coverage`(입력을 각자 다른 시점에 변경해 한 번에 모든 간선 통과),
+`parameters-at-declared-bounds`(경계 선언된 파라미터를 한계값으로). 격자는
+`defaultExperiment` 우선, 없으면 구간 50등분. 제안끼리 같은 격자를 공유한다.
+
+### 5번 답: 완성된 FMU를 읽기 vs 원본 소스에서 빌드하기 (전제: 원본에 CMakeLists 있음)
+
+전문은 `docs/agent-integration-ko.md`의 "두 경로 검토" 절에 있다. 요지:
+
+- 전제대로 CMakeLists가 있으면 **FMPy의 FMU 생성 기능은 쓸 이유가 없다.**
+  측정 결과 `fmpy.template.create_fmu`는 FMI **3.0** Float64 전용이고
+  `ModelStructure`에 `dependencies`를 쓰지 않으며 `model.c`는 뼈대다.
+  생성한 FMU를 `describe`에 넣으면 `supported: false`, `plan`은 `unsupported_fmu`.
+- 두 경로는 배타적이지 않다. 경로 B는 사실상 "경로 A + 선언을 내가 고칠 수 있다"다.
+  도구는 하나로 충분하고 체인은 `cmake --build` → `.fmu` → `review` → `plan` →
+  `validate` → `run`이다.
+- 그래서 `review` 도구를 추가했다(`scenario_plan.review_declaration`).
+  빠진 선언을 심각도 순으로, 각 항목의 `effect`(무엇을 잃는가)와 `fix`(무엇을
+  선언하면 되는가)와 함께 보고한다. 코드: `unsupported_interface`,
+  `unsupported_variable_types`, `no_declared_outputs`, `undeclared_dependencies`,
+  `inputs_without_declared_effect`, `missing_range`, `missing_description`,
+  `missing_unit`, `enumeration_without_items`, `string_input_without_start`,
+  `missing_default_experiment`, `no_log_categories`.
+  확인: Feedthrough는 단위 6·범위 6·설명 14건과 `stepSize` 누락,
+  Drivetrain은 `tau`가 어떤 출력에도 의존 관계로 선언되지 않은 것이 잡힌다.
+  템플릿 FMU는 blocking 2건으로 분류된다.
+- 합격 기준은 어느 경로로도 FMU에서 나오지 않는다. 요구사항 문서가 필요하다.
+- 미결: 사용자 빌드를 호출하는 `build` 도구를 둘지. 빌드 명령과 산출물 경로가
+  저장소 구조에 달려 있어 아직 만들지 않았다. 사용자 저장소 구조를 받으면 추가.
+
+### 검증 결과
+
+```powershell
+# 소스는 이 클론, 환경은 기존 저장소의 .venv (아래 "이 세션의 실행 환경" 참고)
+$env:PYTHONPATH="C:\Users\nubur\fmpy_claude\src"
+C:\Users\nubur\fmu\fmpy\.venv\Scripts\python -m pytest tests/test_scenario.py tests/test_scenario_gui.py tests/test_scenario_agent.py -q
+# 68 passed   (변경 전 기준선 22 passed)
+C:\Users\nubur\fmu\fmpy\.venv\Scripts\python scripts/check_gui.py
+# Ready: FMPy 0.3.32; MainWindow constructed successfully
+```
+
+실제 FMU로 확인한 것:
+
+- 참조 FMU 5종(Feedthrough, BouncingBall, Stair, Drivetrain, Controller)에서
+  `plan`이 만든 제안 **19건 중 19건이 검증 통과 후 실행**됨.
+- `Stair.fmu`가 `stop_time` 10 s에서 doStep을 discard하며 종료를 요청하는 것을
+  발견. 이전 코드는 `FMICallException`으로 중단되어 결과가 사라졌고, 지금은
+  `termination: "fmu_terminated"`로 46 샘플과 합격 판정을 남긴다.
+- 일부러 7개 실수를 넣은 시나리오가 **한 번의 `validate` 호출로 7개 전부**를
+  경로와 함께 보고.
+- `context` 출력이 약 12 KB(Feedthrough 기준)로 프롬프트에 들어간다. `context`가
+  생성한 예시 시나리오가 그대로 검증·실행된다.
+- 네이티브 로거 프록시를 직접 호출해 FMU 메시지가 `LogCapture`까지 도달하는 것을
+  확인. 참조 FMU들은 이 시나리오에서 메시지를 내지 않아, 실제 FMU 로그 내용은
+  사용자 FMU로 재확인이 필요하다.
+
+미확인/미완료:
+
+- upstream 전체 테스트 스위트는 실행하지 않았다(네트워크·빌드 필요). 다만 변경은
+  `scenario*.py`와 `gui/scenario.py`에 한정되고 FMPy 핵심은 건드리지 않았다.
+- 사용자 실제 도메인 FMU는 아직 제공되지 않았다.
+- GUI 화면의 시각 확인은 하지 않았다(상태줄 문구 변경, 보고서 탭 새 항목).
+- 램프 입력, 조건 유지시간/지연/복합 조건/반복, 구간·정착·도달·변화율 판정은
+  여전히 미구현. 모델 호출 코드(Ollama/Qwen 연결)는 이 저장소에 없다.
+
+### 추가 변경: 제안 선택·실행 GUI (같은 세션, 이어서)
+
+사용자 요청: "실행을 자동화할 필요는 없고. 시나리오를 뽑아서 주면. 사용자가
+나중에 선택해서 이 코드가 가상환경에서 제대로 동작하는지 확인할 수 있는
+인터페이스가 필요한거야." → 질문으로 확인한 결과 **기존 PySide6 GUI를 확장**하는
+쪽으로 결정.
+
+- `src/fmpy/gui/scenario_proposals.py` (신규): `ScenarioProposalsDialog`.
+  `plan()`이 만든 제안을 표(체크박스 | id | 제목 | 필요한 도메인 정보 | 결과)로
+  보여준다. 기본 전체 체크, 전체 선택/해제, 행 선택 시 근거·대상·필요 정보를
+  아래 패널에 표시. **선택 실행**은 체크된 것만 `ProposalRunner`(QThread)로
+  순서대로 실제 FMU에 실행(기존 `ScenarioWorker`와 같은 `isInterruptionRequested`
+  취소 패턴). 완료마다 결과를 저장(`<결과폴더>/<제안id>/<실행시각>/`)하고 표의
+  결과 칸과 상세 패널을 갱신. `validate` 실패 제안은 기본 체크 해제 + 사유 표시.
+  실행은 전부 수동 트리거이고 자동 진행·자동 적용은 없음(요청대로).
+- `src/fmpy/gui/scenario.py`: `ScenarioDialog`에 **시나리오 제안 보기...** 버튼
+  추가(FMU 선택 행 아래, JSON 로드 불필요). `openProposals()`가
+  `ScenarioProposalsDialog`를 모달로 연다. FMU 미선택 시 상태줄 안내만.
+- `tests/test_scenario_gui.py`: 제안 목록 생성·체크 상태·상세 패널
+  (`test_proposals_dialog_lists_valid_checked_proposals`), 체크한 것만 실행되고
+  나머지는 "대기" 그대로 유지되며 결과 파일이 실제로 쓰이는지
+  (`test_proposals_dialog_runs_only_what_is_checked`), `ScenarioDialog`에서
+  버튼으로 도달 가능하고 FMU 미선택 시 안내만 뜨는지
+  (`test_proposals_dialog_is_reachable_from_scenario_dialog`) 확인. 4개 → 7개.
+- `docs/scenario-runner-ko.md`, `docs/agent-integration-ko.md`: 사용법 반영.
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_gui.py
+tests/test_scenario_agent.py -q` → **71 passed** (직전 68 → +3).
+`scripts/check_gui.py`는 `ScenarioDialog`를 실제 생성하므로 새 import 체인
+(`scenario.py` → `scenario_proposals.py` → `scenario_agent.py` →
+`scenario_plan.py`/`scenario_schema.py`)까지 실제 창 생성으로 검증됨 —
+"Ready: FMPy 0.3.32; MainWindow constructed successfully" 확인. 추가로
+offscreen Qt로 직접 실행해 표 채움(7개 행), 체크 토글, 스레드 실행 완료 후
+결과 칸·상세 패널·`results.csv`/`report.json` 생성을 수동으로도 확인했다.
+처음에 `openProposals()`가 호출하는 `.exec()`(모달)를 헤드리스 환경에서 직접
+호출해 멈춘 적이 있음 — 테스트에는 `.exec()`를 안 타고 다이얼로그를 직접
+생성하거나 실제 pytest 환경(이벤트 루프 보유)에서만 돌리는 방식으로 피했다.
+
+미완료: 소스 코드 기반(LLM이 로직을 읽고 제안) 시나리오는 아직 `plan`에
+연결되지 않았다. 지금 표는 XML 선언 기반 제안만 보여준다. 나중에 그 기능을
+추가하면 같은 표·같은 실행 경로를 재사용할 수 있도록 `plan()` 반환 형태
+(`{"id","title","rationale","covers","needs_from_domain","scenario","valid"}`)를
+그대로 따르게 만들면 된다.
+
+### 추가 변경: 실제 서드파티 코드 기반 FMU + 로직 유래 시나리오 7개 (같은 세션, 이어서)
+
+사용자 요청 흐름: "fmi2DoStep에서 IO를 바꿔가며 결과를 확인하는 게 되는지" →
+"Ollama 연동이 어떤 식인지" → "그게 소스 코드를 읽고 시나리오를 뽑는 거 아닌지" →
+"실행 자동화는 필요 없고, 제안을 뽑아서 사용자가 골라 돌려보는 인터페이스가
+필요" (→ 기존 GUI 확장, 이미 위에 기록) → **"디폴트는 너(Claude)를 붙여서,
+인터넷에서 실제 동작하는 C 코드를 가져와 FMU로 만들고 그걸로 5케이스 이상
+시나리오를 만들어 직접 돌려보게 해달라."**
+
+- **가져온 코드**: [`pms67/PID`](https://github.com/pms67/PID) (c) 2020 Philip
+  Salmony, **MIT 라이선스**. `PID.c`/`PID.h` 원본 그대로(한 글자도 수정 안 함),
+  비례+사다리꼴 적분(anti-windup 클램프)+대역제한 미분(derivative-on-
+  measurement)을 구현하는 70줄짜리 실제 컨트롤러.
+- `examples/agent/pid_demo/src/pid_fmi2.c` (신규, 직접 작성): FMI 2.0
+  Co-Simulation 래퍼. `FMU2Slave`가 `inspect.getmembers`로 로드를 시도하는
+  모든 `fmi2*` 심볼(33개, ME 전용 10개는 제외)을 `objdump`로 대조해 정확히
+  일치시켰다 — 누락 1개라도 있으면 `FMU2Slave()` 생성 자체가 실패함을
+  사전에 코드 추적으로 확인(`inspect.getmembers(self)` → `getattr(self.dll, name)`).
+  `fmi2ExitInitializationMode`에서 `limMin<=limMax`, `limMinInt<=limMaxInt`를
+  검사해 위반 시 `fmi2Error`+로그 메시지로 거부(진짜 FMI 호출 실패 경로 시연).
+  `fmi2DoStep`에서 `communicationStepSize`와 파라미터 `T`의 불일치를 FMU
+  자신의 로거로 경고(`LogCapture` 기능을 실제 내용으로 시연). 초기화 시 한 번
+  `PIDController_Update`를 호출해 t=0 샘플이 "calculated"로 의미 있게 나오게 함.
+- `examples/agent/pid_demo/modelDescription.xml` (신규, 직접 작성): 변수 16개,
+  출력 4개(`output`,`integrator_state`,`differentiator_state`,`error`) 전부에
+  **정확한** `ModelStructure` 의존 관계를 선언(`differentiator_state`는
+  `setpoint`에 의존하지 않음 — 코드의 "derivative on measurement" 성질을
+  그대로 선언에 반영). `validate_model_description(..., validate_model_structure=True)`
+  결과 **문제 0건**.
+- 빌드: `C:\msys64\mingw64\bin\gcc.exe`(mingw-w64 15.2.0)로 컴파일 성공(경고 0).
+  `examples/agent/pid_demo/build.sh` (신규)로 재현 가능. `*.fmu`/`*.dll`은
+  저장소 전체 관례대로 git에 커밋하지 않음(`.gitignore`) — 이 PC에는 빌드된
+  `PID.fmu`가 바로 사용 가능한 상태로 존재.
+- `examples/agent/pid_demo/scenarios/01~07_*.json` (신규): **코드를 직접 읽고**
+  도출한 7개 시나리오(요청한 "5케이스 이상" 충족). 각각 실제로 실행해 숫자를
+  확인한 뒤 JSON에 반영했다(추측 없음):
+  1. `step_response`: 비례+적분 성장, 포화 전(output 0→7.19)
+  2. `measurement_step_derivative_kick`: 미분 킥(differentiator_state 최대 8.0)
+     후 ~tau 내 감쇠
+  3. `anti_windup_clamp`: integrator_state가 정확히 5.0(limMaxInt)에서 멈춤
+  4. `output_saturation`: output은 즉시 10.0 포화, integrator_state는 아직
+     3.05(두 클램프가 다른 시점에 걸림을 보여줌)
+  5. `setpoint_step_no_derivative_kick`: differentiator_state가 전 구간
+     정확히 0 — "derivative는 setpoint에 반응 안 함"을 수치로 증명(02와 대조)
+  6. `communication_step_mismatch_warns`: T≠step_size일 때 10스텝 모두 경고
+     로그 10건 캡처(`fmu_log`/`log_warnings` 실제 내용으로 시연)
+  7. `invalid_integrator_bounds_fails_init`: **의도적으로 실패하는 케이스**.
+     `limMinInt>limMaxInt` → `run()`이 `ok:false`/`fmi_call_failed` 반환을
+     그대로 확인(이전에 만든 오류 처리 경로의 실증).
+  `plan()`(XML만 보는 자동 제안)은 이 중 어느 것도 못 뽑는다는 것도 확인 —
+  5개 제안(`smoke`,`step-setpoint`,`step-measurement`,`dependency-coverage`,
+  `parameters-at-declared-bounds`)은 전부 돌아가지만 anti-windup·미분 킥·
+  초기화 실패는 XML 선언만으로는 도달 불가능함을 데이터로 보여준다.
+- `review()`로 이 FMU 자체도 점검: **blocking 0건**, medium 2건(단위·범위
+  미선언)뿐. 같은 도구로 본 Feedthrough는 missing_description 14건 등
+  더 많은 결함 — "선언을 풍부하게 쓰면 review 결과가 좋아진다"는 주장을
+  두 FMU 비교로 실증.
+- `tests/test_pid_demo.py` (신규, 9개): 7개 시나리오 전부의 **정확한 수치**를
+  고정(예: `integrator_state max == pytest.approx(5.0)`,
+  `differentiator_state min==max==0`, 시나리오 7은 `fmi_call_failed` 확인).
+  `review()`/`plan()` 결과도 고정. `PID.fmu`가 없으면 스킵(`pytest.mark.skipif`).
+- `examples/agent/pid_demo/README.md` (신규): 출처·라이선스, 빌드법, 7개 표
+  (겨냥한 것/코드의 어디를 읽었는지/실제 확인된 결과), GUI·CLI로 직접 돌려보는
+  법, "이게 왜 에이전트가 코드를 읽고 만든 시나리오인가" 설명.
+
+검증: `pytest tests/test_pid_demo.py -q` → **9 passed**. 전체
+`pytest tests/ -q`(네트워크 불필요 범위, dask 미설치로 `test_examples.py`
+제외)는 **129 passed, 8 failed, 3 skipped** — 8개 실패는 모두
+`native/thirdparty/Reference-FMUs` 서브모듈 미체크아웃, 설치된 CLI
+엔트리포인트 부재, cmake subprocess 등 **이 세션 이전부터 있던 환경 간극**이며
+scenario 관련 코드와는 무관함을 각 트레이스백으로 확인(시나리오/GUI 관련
+코드는 한 줄도 건드리지 않음).
+
+**중요한 한계**: 사용자가 요청한 "디폴트는 너(Claude)를 붙여서"는 **이 세션
+안에서 제가 직접 코드를 읽고 시나리오를 작성하는 방식으로 수행**했다 —
+API로 Claude를 호출하는 자동화 스크립트를 새로 연결한 것은 **아니다**
+(`ANTHROPIC_API_KEY`가 이 환경에 없어 확인 불가했고, 묻지 않고 바로 이 방식을
+선택했음을 사용자에게 명시해야 함). `fmpy.scenario_agent`의 도구 계층
+자체는 이전 세션에서 이미 모델-무관(model-agnostic)하게 만들어져 있으므로,
+나중에 실제 API 루프(Ollama든 Claude API든)를 연결해도 같은
+`context→validate→run` 흐름을 그대로 재사용할 수 있다. 그 자동화 스크립트
+자체는 아직 작성하지 않았다.
+
+### 이 세션의 실행 환경 (중요)
+
+작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의
+새 클론이다. 기존 작업 저장소 `C:\Users\nubur\fmu\fmpy`는 **건드리지 않았고**
+`git status`가 깨끗하며 같은 커밋을 가리킨다. 새 클론에는 `.venv`가 없으므로
+기존 저장소의 `.venv`·네이티브 바이너리·`tests/resources/Reference-FMUs-dist`·
+`examples/demo/Feedthrough.fmu`를 복사해 쓰고, `PYTHONPATH`로 이 클론의 `src`가
+editable 설치(`C:\Users\nubur\fmu\fmpy\src`)보다 앞서게 해 테스트했다.
+**변경 사항은 아직 커밋/푸시하지 않았다.** 어느 저장소를 정본으로 둘지와
+커밋·푸시 여부는 사용자 확인이 필요하다.
+
 ## 최신 변경: 기존 메인 UI 결과 화면 연결 (2026-11-04)
 
 - 사용자는 별도 시나리오 창뿐 아니라 기존 UI에서 실행 결과를 보고 싶다고 명확히 함.

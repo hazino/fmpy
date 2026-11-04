@@ -1,5 +1,4 @@
 """GUI adapter for the same deterministic runner used by the command line."""
-import csv
 import json
 from copy import deepcopy
 from datetime import datetime
@@ -11,7 +10,8 @@ from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineE
                                QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from fmpy import read_model_description
-from fmpy.scenario import run_scenario, validate_scenario
+from fmpy.scenario import run_scenario, validate_scenario, write_results
+from .scenario_proposals import ScenarioProposalsDialog
 from .scenario_results import ScenarioResults
 
 
@@ -28,14 +28,7 @@ class ScenarioWorker(QThread):
     def run(self):
         try:
             result = run_scenario(self.fmu, self.scenario, self.isInterruptionRequested)
-            self.directory.mkdir(parents=True, exist_ok=False)
-            with (self.directory / "results.csv").open("w", newline="", encoding="utf-8") as stream:
-                writer = csv.DictWriter(stream, fieldnames=["time", *self.scenario["outputs"]])
-                writer.writeheader()
-                writer.writerows(result["samples"])
-            report = {k: v for k, v in result.items() if k != "samples"}
-            (self.directory / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-            (self.directory / "scenario.json").write_text(json.dumps(self.scenario, indent=2), encoding="utf-8")
+            write_results(self.directory, self.scenario, result)
             self.completed.emit(result, str(self.directory))
         except Exception as error:
             self.failed.emit(str(error))
@@ -74,6 +67,14 @@ class ScenarioDialog(QDialog):
             row.addWidget(edit, 1)
             row.addWidget(button)
             layout.addLayout(row)
+        proposalsRow = QHBoxLayout()
+        proposalsRow.addStretch(1)
+        self.proposalsButton = QPushButton("시나리오 제안 보기...")
+        self.proposalsButton.setToolTip(
+            "선택한 FMU가 선언한 구조에서 시나리오 후보를 뽑아 보여줍니다. JSON 로드는 필요 없습니다.")
+        self.proposalsButton.clicked.connect(self.openProposals)
+        proposalsRow.addWidget(self.proposalsButton)
+        layout.addLayout(proposalsRow)
         layout.addWidget(QLabel("JSON 로드 시 메인 재생에 적용됩니다. 창을 닫아도 유지되며, 실행 조건은 JSON을 따릅니다."))
         self.tabs = QTabWidget()
         self.preview = QTextEdit()
@@ -111,6 +112,12 @@ class ScenarioDialog(QDialog):
             self.scenarioCleared.emit()
             self.fmuPath.setText(path)
             self.applyToMain()
+
+    def openProposals(self):
+        if not self.fmuPath.text():
+            self.status.setText("먼저 FMU를 선택하세요.")
+            return
+        ScenarioProposalsDialog(self.fmuPath.text(), self).exec()
 
     def chooseScenario(self):
         path, _ = QFileDialog.getOpenFileName(self, "시나리오 로드", self.scenarioPath.text(), "JSON (*.json)")
@@ -201,7 +208,14 @@ class ScenarioDialog(QDialog):
         report = {k: v for k, v in result.items() if k != "samples"}
         self.report.setPlainText(json.dumps(report, ensure_ascii=False, indent=2) + "\n\n" + directory)
         verdict = "합격" if result["passed"] is True else "실패" if result["passed"] is False else "판정 기준 없음"
-        self.status.setText(f"완료 — {verdict} / {len(rows)}개 샘플 / 저장: {directory}")
+        summary = result["summary"]
+        # The FMU's own messages are the only account of why it refused a call.
+        noise = "".join(f" / FMU {label} {count}건" for label, count in
+                        (("오류", summary["log_errors"]), ("경고", summary["log_warnings"]))
+                        if count)
+        if summary["termination"] == "fmu_terminated":
+            noise += " / FMU가 조기 종료를 요청함"
+        self.status.setText(f"완료 — {verdict} / {len(rows)}개 샘플{noise} / 저장: {directory}")
         self.openResultsButton.setEnabled(True)
         self.tabs.setCurrentWidget(self.plot)
         self.resultReady.emit(result)

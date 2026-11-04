@@ -56,6 +56,9 @@ fmpy-gui = "fmpy.gui:main"
 dev-dependencies = [
     "pytest",
     "pyside6>=6.8.0.2",
+    # Cross-checks the published scenario JSON Schema against the runner's own
+    # validator; the runner itself never needs it.
+    "jsonschema",
 ]
 
 [tool.hatch.build]

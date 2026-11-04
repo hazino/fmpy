@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "measurement_step_derivative_kick",
+  "description": "Setpoint stays at 0; measurement steps from 0 to -2 at t=0.2 (a sensor reading suddenly dropping). PID.c computes the derivative term from the CHANGE in measurement between steps, so this one step should produce a brief, large spike in differentiator_state that decays toward 0 over roughly tau=0.02s, while a setpoint step (see 05) produces none. No checks: this is meant to be watched on the result graph, not just pass/fail.",
+  "metadata": {"derived_from": "src/PID.c PIDController_Update, the differentiator formula", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 0.5,
+  "step_size": 0.01,
+  "initial": {"setpoint": 0.0, "measurement": 0.0},
+  "events": [
+    {"id": "measurement-drop", "time": 0.2, "set": {"measurement": -2.0}}
+  ],
+  "outputs": ["output", "differentiator_state", "error"]
+}

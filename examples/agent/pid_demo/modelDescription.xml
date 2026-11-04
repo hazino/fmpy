@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription
+  fmiVersion="2.0"
+  modelName="PID"
+  description="FMI 2.0 Co-Simulation wrapper around the third-party PID controller from https://github.com/pms67/PID (c) 2020 Philip Salmony, MIT License. The control algorithm in PID.c/PID.h is unmodified; see sources/."
+  generationTool="hand-written for fmpy scenario-agent demo"
+  generationDateAndTime="2026-11-04T00:00:00Z"
+  guid="{8F1C9E2A-6B3D-4C7E-9A1F-2D5E7B9C4F10}"
+  numberOfEventIndicators="0">
+
+  <CoSimulation
+    modelIdentifier="PID"
+    canHandleVariableCommunicationStepSize="true"
+    canNotUseMemoryManagementFunctions="true"
+    canGetAndSetFMUstate="false"
+    canSerializeFMUstate="false"
+    providesDirectionalDerivative="false">
+    <SourceFiles>
+      <File name="pid_fmi2.c"/>
+      <File name="PID.c"/>
+    </SourceFiles>
+  </CoSimulation>
+
+  <LogCategories>
+    <Category name="logStatusError" description="Configuration and sample-time consistency problems reported by the controller wrapper"/>
+  </LogCategories>
+
+  <DefaultExperiment startTime="0" stopTime="2" stepSize="0.01"/>
+
+  <ModelVariables>
+
+    <ScalarVariable name="time" valueReference="100" causality="independent" variability="continuous">
+      <Real/>
+    </ScalarVariable>
+
+    <ScalarVariable name="setpoint" valueReference="0" causality="input" variability="continuous"
+                    description="Desired value of the controlled quantity. The derivative term acts on measurement, not on setpoint, so a setpoint step alone produces no derivative kick.">
+      <Real start="0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="measurement" valueReference="1" causality="input" variability="continuous"
+                    description="Measured value of the controlled quantity, as the controller would receive it from a sensor or a plant model.">
+      <Real start="0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="Kp" valueReference="2" causality="parameter" variability="fixed"
+                    description="Proportional gain.">
+      <Real start="2.0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="Ki" valueReference="3" causality="parameter" variability="fixed"
+                    description="Integral gain. The integrator uses trapezoidal integration and is clamped to [limMinInt, limMaxInt] (anti-windup).">
+      <Real start="0.5" min="0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="Kd" valueReference="4" causality="parameter" variability="fixed"
+                    description="Derivative gain. The derivative is a band-limited differentiator on measurement (time constant tau), with the sign chosen so a setpoint change alone does not excite it.">
+      <Real start="0.1" min="0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="tau" valueReference="5" causality="parameter" variability="fixed"
+                    description="Time constant of the derivative low-pass filter.">
+      <Real start="0.02" min="1e-6"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="limMin" valueReference="6" causality="parameter" variability="fixed"
+                    description="Lower clamp on the controller output. Must not exceed limMax (checked at initialization).">
+      <Real start="-10.0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="limMax" valueReference="7" causality="parameter" variability="fixed"
+                    description="Upper clamp on the controller output. Must not be less than limMin (checked at initialization).">
+      <Real start="10.0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="limMinInt" valueReference="8" causality="parameter" variability="fixed"
+                    description="Lower clamp on the integrator term (anti-windup). Must not exceed limMaxInt (checked at initialization).">
+      <Real start="-5.0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="limMaxInt" valueReference="9" causality="parameter" variability="fixed"
+                    description="Upper clamp on the integrator term (anti-windup). Must not be less than limMinInt (checked at initialization).">
+      <Real start="5.0"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="T" valueReference="10" causality="parameter" variability="fixed"
+                    description="Controller sample time, used directly in the integral and derivative formulas. Must match the scenario's step_size: a mismatch is reported through the FMU's own logger (logStatusError) at every doStep.">
+      <Real start="0.01" min="1e-6"/>
+    </ScalarVariable>
+
+    <ScalarVariable name="output" valueReference="11" causality="output" variability="continuous" initial="calculated"
+                    description="Controller output: proportional + integral + derivative terms, clamped to [limMin, limMax].">
+      <Real/>
+    </ScalarVariable>
+
+    <ScalarVariable name="integrator_state" valueReference="12" causality="output" variability="continuous" initial="calculated"
+                    description="Internal integrator accumulator (pid.integrator), after anti-windup clamping to [limMinInt, limMaxInt]. Exposed so a test can check the clamp directly instead of inferring it from the output.">
+      <Real/>
+    </ScalarVariable>
+
+    <ScalarVariable name="differentiator_state" valueReference="13" causality="output" variability="continuous" initial="calculated"
+                    description="Internal band-limited derivative term (pid.differentiator). Depends on measurement only, not on setpoint.">
+      <Real/>
+    </ScalarVariable>
+
+    <ScalarVariable name="error" valueReference="14" causality="output" variability="continuous" initial="calculated"
+                    description="setpoint - measurement, as computed by the wrapper for convenience; the controller itself only receives setpoint and measurement.">
+      <Real/>
+    </ScalarVariable>
+
+  </ModelVariables>
+
+  <!-- ModelVariables order (1-based position, as ModelStructure/Unknown/@index refers to it):
+       1 time, 2 setpoint, 3 measurement, 4 Kp, 5 Ki, 6 Kd, 7 tau, 8 limMin, 9 limMax,
+       10 limMinInt, 11 limMaxInt, 12 T, 13 output, 14 integrator_state,
+       15 differentiator_state, 16 error. -->
+  <ModelStructure>
+    <Outputs>
+      <!-- output = clamp(Kp*error + integrator + differentiator); depends on every input and parameter. -->
+      <Unknown index="13" dependencies="2 3 4 5 6 7 8 9 10 11 12"
+               dependenciesKind="dependent dependent dependent dependent dependent dependent dependent dependent dependent dependent dependent"/>
+      <!-- integrator = clamp(prev + 0.5*Ki*T*(error+prevError), limMinInt, limMaxInt). -->
+      <Unknown index="14" dependencies="2 3 5 10 11 12"
+               dependenciesKind="dependent dependent dependent dependent dependent dependent"/>
+      <!-- differentiator is computed from measurement only (derivative-on-measurement), never setpoint. -->
+      <Unknown index="15" dependencies="3 6 7 12"
+               dependenciesKind="dependent dependent dependent dependent"/>
+      <!-- error = setpoint - measurement. -->
+      <Unknown index="16" dependencies="2 3"
+               dependenciesKind="dependent dependent"/>
+    </Outputs>
+    <InitialUnknowns>
+      <Unknown index="13" dependencies="2 3 4 5 6 7 8 9 10 11 12"
+               dependenciesKind="dependent dependent dependent dependent dependent dependent dependent dependent dependent dependent dependent"/>
+      <Unknown index="14" dependencies="2 3 5 10 11 12"
+               dependenciesKind="dependent dependent dependent dependent dependent dependent"/>
+      <Unknown index="15" dependencies="3 6 7 12"
+               dependenciesKind="dependent dependent dependent dependent"/>
+      <Unknown index="16" dependencies="2 3"
+               dependenciesKind="dependent dependent"/>
+    </InitialUnknowns>
+  </ModelStructure>
+
+</fmiModelDescription>

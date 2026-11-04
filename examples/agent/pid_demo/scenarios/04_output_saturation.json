@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "output_saturation",
+  "description": "setpoint=20 makes the proportional term alone (Kp*error = 2*20 = 40) far exceed limMax=10, so output clamps to 10 immediately -- before the integrator has had time to wind up to its own limit (limMaxInt=5). Run only 0.3s so the two clamps are caught at different points: output already saturated, integrator still ramping. That ordering is only visible by reading the two clamp statements in PID.c; the declared dependencies alone do not say which happens first.",
+  "metadata": {"derived_from": "src/PID.c PIDController_Update, output clamp vs integrator clamp", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 0.3,
+  "step_size": 0.01,
+  "initial": {"setpoint": 20.0, "measurement": 0.0},
+  "outputs": ["output", "integrator_state"],
+  "checks": [
+    {"id": "output-never-exceeds-declared-limit", "variable": "output", "min": -10.0, "max": 10.0,
+     "description": "Verified: output reaches exactly 10.0 immediately and integrator is still only ~3.05, well under its own 5.0 limit."}
+  ]
+}

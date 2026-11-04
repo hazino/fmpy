@@ -5,6 +5,7 @@ import time
 import pytest
 
 pytest.importorskip("PySide6")
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 from fmpy.gui.scenario import ScenarioDialog
 
@@ -159,3 +160,77 @@ def test_main_play_retains_scenario_after_dialog_close(app, reference_fmus_dist_
     assert not dialog.loadScenario(source)
     assert window.activeScenario is None
     window.close()
+
+
+def test_proposals_dialog_lists_valid_checked_proposals(app, reference_fmus_dist_dir):
+    from fmpy.gui.scenario_proposals import ScenarioProposalsDialog
+
+    path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    dialog = ScenarioProposalsDialog(str(path))
+    assert dialog.table.rowCount() == len(dialog.proposals) > 0
+    assert dialog.table.item(0, 0).text() == "smoke"
+    assert all(dialog.table.item(row, 0).checkState() == Qt.Checked
+              for row in range(dialog.table.rowCount()))
+    assert dialog.runButton.isEnabled()
+
+    dialog.setAllChecked(False)
+    assert all(dialog.table.item(row, 0).checkState() == Qt.Unchecked
+              for row in range(dialog.table.rowCount()))
+    dialog.setAllChecked(True)
+    assert dialog.table.item(2, 0).checkState() == Qt.Checked
+
+    dialog.table.selectRow(0)
+    assert "근거" in dialog.detail.toPlainText()
+    dialog.close()
+
+
+def test_proposals_dialog_runs_only_what_is_checked(app, reference_fmus_dist_dir, tmp_path):
+    from pathlib import Path
+
+    from fmpy.gui.scenario_proposals import ScenarioProposalsDialog
+
+    path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    dialog = ScenarioProposalsDialog(str(path))
+    dialog.outputPath.setText(str(tmp_path / "out"))
+    # Only run the smoke test; leave the rest unchecked.
+    dialog.setAllChecked(False)
+    dialog.table.item(0, 0).setCheckState(Qt.Checked)
+    dialog.runSelected()
+    deadline = time.monotonic() + 20
+    while dialog.worker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert dialog.worker.wait(1000)
+    app.processEvents()
+
+    assert 0 in dialog.results and 1 not in dialog.results
+    assert "샘플" in dialog.table.item(0, 3).text()
+    assert dialog.table.item(1, 3).text() == "대기"  # untouched
+    assert dialog.openResultsButton.isEnabled()
+    directory = Path(dialog.directories[0])
+    assert (directory / "results.csv").is_file()
+    assert (directory / "report.json").is_file()
+
+    dialog.table.selectRow(0)
+    assert "실행 결과" in dialog.detail.toPlainText()
+    assert str(directory) in dialog.detail.toPlainText()
+    dialog.close()
+
+
+def test_proposals_dialog_is_reachable_from_scenario_dialog(app, reference_fmus_dist_dir):
+    from fmpy.gui.scenario import ScenarioDialog
+    from fmpy.gui.scenario_proposals import ScenarioProposalsDialog
+
+    path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    dialog = ScenarioDialog(str(path))
+    assert dialog.proposalsButton.isEnabled()
+
+    without_fmu = ScenarioDialog()
+    without_fmu.openProposals()
+    assert "FMU를 선택" in without_fmu.status.text()
+
+    sub = ScenarioProposalsDialog(dialog.fmuPath.text(), dialog)
+    assert sub.table.rowCount() > 0
+    sub.close()
+    dialog.close()
+    without_fmu.close()
