@@ -2,6 +2,10 @@
 
 # FMPy
 
+This fork adds an AI-independent **FMI 2.0 Co-Simulation JSON scenario runner**.
+See [설치 및 시나리오 실행 안내](docs/scenario-runner-ko.md) for setup, interface inspection,
+time events, conditional actions, CSV results, and validation rules.
+
 FMPy is a free Python library to simulate [Functional Mock-up Units (FMUs)](http://fmi-standard.org/) that...
 
 - supports FMI 1.0, 2.0, and 3.0

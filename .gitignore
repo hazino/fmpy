@@ -37,6 +37,9 @@ tests/Rectifier/
 
 # PyCharm project
 .idea/
+.venv/
+scenario-results/
+tests/resources/Reference-FMUs-dist/
 
 # file-based project format
 *.iws
