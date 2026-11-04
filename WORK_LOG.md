@@ -316,6 +316,40 @@ API로 Claude를 호출하는 자동화 스크립트를 새로 연결한 것은 
 `context→validate→run` 흐름을 그대로 재사용할 수 있다. 그 자동화 스크립트
 자체는 아직 작성하지 않았다.
 
+### 추가 변경: 실제 에이전트 연동 코드 (같은 세션, 이어서) + 커밋/푸시
+
+사용자 요청: "커밋 푸쉬 진행하고 연동까지 진행해줘."
+
+- **커밋/푸시**: `main`은 보호 관례상 직접 커밋하지 않고
+  `feature/scenario-agent-integration` 브랜치를 새로 만들어 커밋 후
+  `origin`에 푸시했다(`5fc84f9`). PR은 아직 안 만들었다 — 필요하면 요청.
+- **연동**: 이 PC에 **Ollama 0.40.4가 실제로 돌고 있고 `gemma:2b`가 설치되어
+  있음**을 확인(`curl localhost:11434/api/tags`). `ANTHROPIC_API_KEY`와
+  `anthropic` 패키지는 이 환경에 없음(이전에도 확인, 재확인).
+  - `examples/agent/ollama_loop.py` (신규): `context`→모델 호출→`validate`
+    교정 루프→`run`까지 도는 실제 코드. **PID.fmu에 대해 실제로 2회 실행해
+    확인**: 루프 자체(파싱→검증→교정→실행)는 둘 다 1회 시도로 통과. 단
+    `gemma:2b`(2B, completion-only, tool-calling 미지원)는 자연어 요청에서
+    숫자 하나(setpoint 값)만 반영하고 `outputs`/`checks` 같은 구조적 지시는
+    못 따르며 예시 JSON을 거의 그대로 돌려줬다 — 솔직하게 기록.
+  - `examples/agent/claude_loop.py` (신규): 같은 루프를 Anthropic Messages
+    API 네이티브 tool-calling(`scenario_agent.TOOLS`를 `input_schema`로 전달)
+    으로 구현. **이 환경엔 SDK/키가 없어 실제 API 호출은 검증 못 했다** —
+    `py_compile` 통과, `--help` 동작, 의존성 누락 시 종료 코드 2로 깨끗하게
+    실패하는 것까지만 확인. 사용자 쪽에서 키로 첫 실행을 확인해야 한다.
+  - `docs/agent-integration-ko.md`에 두 스크립트 사용법과 위 실측 결과를
+    "실제로 연결해 돌려본 결과 / 아직 검증 안 한 것"으로 솔직하게 구분해
+    기록했다.
+- 검증: 소스 코드(`src/fmpy/scenario*.py`, `gui/scenario*.py`)는 이번에
+  건드리지 않았으므로 `pytest tests/test_scenario.py tests/test_scenario_gui.py
+  tests/test_scenario_agent.py tests/test_pid_demo.py -q` 재확인 →
+  **80 passed**(기존 71 + pid_demo 9).
+
+미완료: `qwen2.5` 같은 tool-calling 지원 모델로 Ollama 쪽을 다시 시도하면
+`gemma:2b`보다 나을 가능성이 높으나 실측하지 않았다(이 PC엔 `gemma:2b`만
+pull되어 있음). Claude API 루프는 사용자 환경에서 최초 1회 실행 확인이
+필요하다. PR 생성 여부는 사용자 확인 대기.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

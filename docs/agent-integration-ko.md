@@ -122,6 +122,41 @@ FMI 2.0 FMU는 `sources/`에 C 소스를 함께 담을 수 있습니다. 실제�
 들어 있는 `resources/`는 목록으로 함께 보고합니다. 특정 거동의 원인을 추적할 때
 `sources/`를 읽는 것은 유효하지만, 시험 계획의 출처로 삼지는 않습니다.
 
+## 실제로 연결해 돌려본 결과 (Ollama) / 아직 실행 검증 안 한 것 (Claude API)
+
+`examples/agent/ollama_loop.py`: 자연어 요청 → `context` → 모델 호출 →
+`validate`로 교정 → `run`까지 도는 실제 코드입니다. 이 PC에서 돌고 있는
+Ollama 0.40.4 + `gemma:2b`(2B, completion 전용, tool-calling 미지원)로
+**실제로 실행해 확인**했습니다.
+
+```powershell
+python examples/agent/ollama_loop.py --fmu examples/agent/pid_demo/PID.fmu `
+  --request "Step the setpoint from 0 to 2 at time 0.2 ... check output stays between -10 and 10." `
+  --model gemma:2b
+```
+
+**솔직한 결과**: 루프 자체(파싱→검증→교정→실행)는 두 번 다 1회 시도로 통과해
+정상 작동했습니다. 그런데 `gemma:2b`는 요청에서 **숫자 하나**(setpoint 값)는
+반영했지만, `outputs`에 `integrator_state` 추가하기, `checks`의 변수·한계값
+바꾸기, `name`/`description` 채우기 같은 **구조적 지시는 따르지 못하고
+예시 JSON을 거의 그대로 돌려줬습니다.** 즉 검증·실행 배선은 문제없이
+동작하지만, 2B급 completion-only 모델에게 복잡한 시나리오 작성을 맡기기에는
+무리라는 것이 실측 결과입니다. 더 큰 모델(`qwen2.5` 등 tool-calling 지원)로
+바꾸거나, Ollama의 `/api/chat` `tools=` 파라미터에 `scenario_agent.TOOLS`를
+그대로 넘기는 네이티브 tool-calling 방식으로 바꾸면 나아질 가능성이 높습니다
+(이 스크립트는 prompt-and-parse 방식이라 `format="json"`만 쓰고 있습니다).
+
+`examples/agent/claude_loop.py`: 같은 루프를 Anthropic Messages API의
+네이티브 tool-calling(`scenario_agent.TOOLS`를 `input_schema`로 그대로 전달)
+으로 구현했습니다. **이 환경에는 `anthropic` 패키지와 `ANTHROPIC_API_KEY`가
+없어 실제 API 호출은 검증하지 못했습니다** — `python -m py_compile`과
+`--help`/의존성 누락 시 종료 코드 2까지만 확인했습니다. API 키가 있는 환경에서
+`pip install anthropic && export ANTHROPIC_API_KEY=...`로 첫 실행을 직접
+확인해 주셔야 합니다.
+
+두 스크립트 모두 모델이 실제로 FMU를 건드리는 일은 없습니다 — 모델은 JSON
+텍스트만 내놓고, `validate`/`run`은 항상 이 저장소의 코드가 실행합니다.
+
 ## GUI에서 제안을 고르고 결과를 확인하기
 
 실행을 자동화하지 않고, **사람이 제안을 보고 고른 것만** 돌려서 "포팅한 코드가
