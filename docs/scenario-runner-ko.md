@@ -7,6 +7,27 @@ FMU 내부 구현을 몰라도 사용할 수 있지만 변수 의미·단위·�
 
 ## 설치 (Windows PowerShell, Python 3.10 이상)
 
+Python 3.10 이상과 인터넷 연결이 필요합니다. 저장소 루트에서 아래 한 줄로
+가상환경 생성, 네이티브 라이브러리 준비, GUI·시험 의존성 설치와 설치 검증을 수행합니다.
+기존 `.venv`가 있으면 재사용하며, 재실행 시에도 로컬 수정 소스를 유지합니다.
+Python 자체는 설치되어 있어야 합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Launch
+```
+
+`-Launch`를 빼면 설치만 합니다. 실행 정책 우회는 해당 PowerShell 프로세스에만
+적용되며 시스템 설정은 바꾸지 않습니다. 다른 Python을 사용하려면
+`-Python "C:\Path\To\python.exe"`를 지정합니다(가상환경 최초 생성 시 적용).
+
+설치 후 GUI 실행:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-fmpy.ps1
+```
+
+아래는 스크립트 없이 수동으로 설치하는 방법입니다.
+
 저장소 루트에서 실행합니다. 공식 Git 소스에는 빌드된 네이티브 라이브러리가
 빠져 있으므로 동일 버전의 공식 배포 패키지에서 바이너리를 준비합니다.
 
@@ -14,7 +35,7 @@ FMU 내부 구현을 몰라도 사용할 수 있지만 변수 의미·단위·�
 python -m venv .venv
 .\.venv\Scripts\python -m pip install fmpy==0.3.32 pytest requests
 .\.venv\Scripts\python scripts/prepare_native.py
-.\.venv\Scripts\python -m pip install -e . --no-deps
+.\.venv\Scripts\python -m pip install -e ".[gui]"
 ```
 
 ## 사용
