@@ -12,9 +12,19 @@ FMU 파일은 변경하지 않고 사용하며 소스 저장소에는 바이너�
 .\.venv\Scripts\python examples/demo/prepare.py
 ```
 
-기본 FMPy GUI에서 `examples/demo/Feedthrough.fmu`를 열어 변수와 모델을 확인할 수
-있습니다. **추가한 JSON 시나리오의 로드 버튼은 아직 GUI에 없습니다.**
-GUI에서 실행하는 시뮬레이션과 아래 시나리오 실행은 별개입니다.
+FMPy GUI 도구 모음에서 **Scenario...** 버튼을 누릅니다.
+
+1. **FMU 선택...** → `examples/demo/Feedthrough.fmu` (메인 창에서 열었다면 자동 선택)
+2. **시나리오 로드...** → `examples/demo/scenario.json`
+3. 검증 완료 문구와 JSON 내용을 확인하고 **시나리오 실행** 클릭
+4. **결과 그래프**, **판정 / 결과** 탭에서 확인
+5. **결과 폴더 열기**로 CSV·보고서·실행한 시나리오 확인
+
+GUI는 `scenario-results/gui` 아래 실행별 폴더에 저장합니다. 이 실행에서는
+JSON의 설정을 사용하며 기본 Simulate 화면의 설정은 적용하지 않습니다.
+실행 중 중지를 요청하면 현재 FMU 계산 구간 종료 후 중지합니다.
+
+명령줄에서도 같은 실행기를 사용할 수 있습니다.
 
 ```powershell
 .\.venv\Scripts\python -m fmpy.scenario examples/demo/Feedthrough.fmu examples/demo/scenario.json --output scenario-results/demo

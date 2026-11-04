@@ -148,7 +148,7 @@ def validate_scenario(scenario, md):
     return variables, count
 
 
-def run_scenario(fmu_path, scenario):
+def run_scenario(fmu_path, scenario, cancelled=None):
     """Execute a validated scenario and return JSON-serializable samples and checks."""
     md = read_model_description(str(fmu_path))
     variables, count = validate_scenario(scenario, md)
@@ -188,6 +188,8 @@ def run_scenario(fmu_path, scenario):
             fmu.exitInitializationMode()
             initialized = True
             for index in range(count + 1):
+                if cancelled is not None and cancelled():
+                    raise RuntimeError("Scenario cancelled")
                 time = start + index * step
                 rows.append({"time": time, **{n: read(n) for n in scenario["outputs"]}})
                 if index == count:

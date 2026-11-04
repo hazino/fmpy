@@ -281,6 +281,9 @@ class MainWindow(QMainWindow):
         self.ui.actionExit.triggered.connect(QApplication.closeAllWindows)
 
         # tools menu
+        self.scenarioAction = self.ui.toolBar.addAction("Scenario...")
+        self.scenarioAction.setToolTip("Load and run an FMI 2.0 JSON scenario")
+        self.scenarioAction.triggered.connect(self.openScenario)
         self.ui.actionBuildPlatformBinary.triggered.connect(self.buildPlatformBinary)
 
         self.ui.actionValidateFMU.triggered.connect(self.validateFMU)
@@ -407,6 +410,15 @@ class MainWindow(QMainWindow):
         self.actionCopyValueReference.setEnabled(can_copy)
 
         self.contextMenu.exec_(currentView.mapToGlobal(point))
+
+    def openScenario(self):
+        from .scenario import ScenarioDialog
+
+        if self.simulationThread is not None and self.simulationThread.isRunning():
+            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
+            return
+        dialog = ScenarioDialog(self.filename, self)
+        dialog.exec()
 
     def load(self, filename=None):
 

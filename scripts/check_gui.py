@@ -6,6 +6,9 @@ from fmpy.gui.MainWindow import MainWindow
 
 app = QApplication(["setup-check", "-platform", "offscreen"])
 window = MainWindow()
+from fmpy.gui.scenario import ScenarioDialog
+dialog = ScenarioDialog(parent=window)
+dialog.close()
 app.processEvents()
 window.close()
 app.processEvents()
