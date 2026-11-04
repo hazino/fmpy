@@ -284,6 +284,13 @@ class MainWindow(QMainWindow):
         self.scenarioAction = self.ui.toolBar.addAction("Scenario...")
         self.scenarioAction.setToolTip("Load and run an FMI 2.0 JSON scenario")
         self.scenarioAction.triggered.connect(self.openScenario)
+        self.scenarioDialog = None
+        self.activeScenario = None
+        self.scenarioLabel = QLabel("시나리오: 미적용")
+        self.ui.toolBar.addWidget(self.scenarioLabel)
+        self.clearScenarioAction = self.ui.toolBar.addAction("시나리오 해제")
+        self.clearScenarioAction.setEnabled(False)
+        self.clearScenarioAction.triggered.connect(self.clearScenario)
         self.ui.actionBuildPlatformBinary.triggered.connect(self.buildPlatformBinary)
 
         self.ui.actionValidateFMU.triggered.connect(self.validateFMU)
@@ -417,10 +424,38 @@ class MainWindow(QMainWindow):
         if self.simulationThread is not None and self.simulationThread.isRunning():
             QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
             return
-        dialog = ScenarioDialog(self.filename, self)
-        dialog.exec()
+        if self.scenarioDialog is None:
+            self.scenarioDialog = ScenarioDialog(self.filename, self)
+            self.scenarioDialog.scenarioApplied.connect(self.applyScenario)
+            self.scenarioDialog.scenarioCleared.connect(self.clearScenario)
+        elif self.activeScenario is None and self.filename:
+            self.scenarioDialog.fmuPath.setText(str(self.filename))
+            self.scenarioDialog.validate()
+        self.scenarioDialog.exec()
+
+    def applyScenario(self, fmu, scenario):
+        if not self.filename or Path(self.filename).resolve() != Path(fmu).resolve():
+            self.load(fmu)
+        if self.modelDescription is None or Path(self.filename).resolve() != Path(fmu).resolve():
+            self.clearScenario()
+            return
+        self.activeScenario = (str(Path(fmu).resolve()), scenario)
+        self.scenarioLabel.setText(f"시나리오: {Path(scenario).name}")
+        self.scenarioLabel.setToolTip(f"{scenario}\n메인 재생은 로드된 JSON 조건을 사용합니다.")
+        self.clearScenarioAction.setEnabled(True)
+        self.ui.actionSimulate.setToolTip("적용된 시나리오 실행")
+
+    def clearScenario(self):
+        self.activeScenario = None
+        self.scenarioLabel.setText("시나리오: 미적용")
+        self.scenarioLabel.setToolTip("")
+        self.clearScenarioAction.setEnabled(False)
+        self.ui.actionSimulate.setToolTip("Start simulation")
 
     def load(self, filename=None):
+
+        if self.activeScenario is not None:
+            self.clearScenario()
 
         if not self.isVisible():
             self.show()
@@ -764,6 +799,15 @@ class MainWindow(QMainWindow):
         self.variableDeselected.emit(variable)
 
     def startSimulation(self):
+
+        if self.activeScenario is not None:
+            dialog = self.scenarioDialog
+            if dialog is not None:
+                dialog.setModal(True)
+                dialog.show()
+                dialog.raise_()
+                dialog.startRun()
+            return
 
         from fmpy.gui.simulation import SimulationThread
 

@@ -97,3 +97,44 @@ def test_multiple_graph_selection_expansion_and_reset(app):
     assert not viewer.graphs
     assert not viewer.addButton.isEnabled()
     viewer.close()
+
+
+def test_main_play_retains_scenario_after_dialog_close(app, reference_fmus_dist_dir, tmp_path):
+    from PySide6.QtCore import QTimer
+    from fmpy.gui.MainWindow import MainWindow
+    window = MainWindow()
+    QTimer.singleShot(0, lambda: window.scenarioDialog.reject())
+    window.openScenario()
+    dialog = window.scenarioDialog
+    fmu = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    dialog.fmuPath.setText(str(fmu))
+    source = tmp_path / "main-scenario.json"
+    source.write_text(json.dumps({"version": 1, "stop_time": 0.2, "step_size": 0.1,
+                                 "initial": {"Float64_continuous_input": 7},
+                                 "outputs": ["Float64_continuous_output"]}))
+    dialog.outputPath.setText(str(tmp_path / "runs"))
+    assert dialog.loadScenario(source)
+    dialog.close()
+    assert window.activeScenario is not None
+    assert "main-scenario.json" in window.scenarioLabel.text()
+    window.ui.actionSimulate.trigger()
+    deadline = time.monotonic() + 20
+    while dialog.worker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert dialog.worker.wait(1000)
+    app.processEvents()
+    assert dialog.result is not None, dialog.status.text()
+    assert dialog.result["samples"][-1]["Float64_continuous_output"] == 7
+    dialog.close()
+    assert window.activeScenario is not None
+    window.clearScenarioAction.trigger()
+    assert window.activeScenario is None
+    assert dialog.applyToMain()
+    assert window.activeScenario is not None
+    window.load(str(fmu))
+    assert window.activeScenario is None
+    source.write_text("bad json")
+    assert not dialog.loadScenario(source)
+    assert window.activeScenario is None
+    window.close()

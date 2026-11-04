@@ -42,6 +42,9 @@ class ScenarioWorker(QThread):
 
 
 class ScenarioDialog(QDialog):
+    scenarioApplied = Signal(str, str)
+    scenarioCleared = Signal()
+
     def __init__(self, fmu=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("FMI 2.0 Scenario / 시나리오 실행")
@@ -70,7 +73,7 @@ class ScenarioDialog(QDialog):
             row.addWidget(edit, 1)
             row.addWidget(button)
             layout.addLayout(row)
-        layout.addWidget(QLabel("JSON의 초기값·시간·입력을 사용합니다. 기본 Simulate 화면의 설정과는 별도로 실행합니다."))
+        layout.addWidget(QLabel("JSON 로드 시 메인 재생에 적용됩니다. 창을 닫아도 유지되며, 실행 조건은 JSON을 따릅니다."))
         self.tabs = QTabWidget()
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
@@ -88,21 +91,25 @@ class ScenarioDialog(QDialog):
         self.runButton = QPushButton("시나리오 실행")
         self.runButton.setEnabled(False)
         self.runButton.clicked.connect(self.startRun)
+        self.applyButton = QPushButton("메인 재생에 적용")
+        self.applyButton.setEnabled(False)
+        self.applyButton.clicked.connect(self.applyToMain)
         self.cancelButton = QPushButton("실행 중지")
         self.cancelButton.setEnabled(False)
         self.cancelButton.clicked.connect(self.cancelRun)
         self.openResultsButton = QPushButton("결과 폴더 열기")
         self.openResultsButton.setEnabled(False)
         self.openResultsButton.clicked.connect(self.openResults)
-        for button in (self.runButton, self.cancelButton, self.openResultsButton):
+        for button in (self.applyButton, self.runButton, self.cancelButton, self.openResultsButton):
             buttons.addWidget(button)
         layout.addLayout(buttons)
 
     def chooseFmu(self):
         path, _ = QFileDialog.getOpenFileName(self, "FMU 선택", self.fmuPath.text(), "FMU (*.fmu)")
         if path:
+            self.scenarioCleared.emit()
             self.fmuPath.setText(path)
-            self.validate()
+            self.applyToMain()
 
     def chooseScenario(self):
         path, _ = QFileDialog.getOpenFileName(self, "시나리오 로드", self.scenarioPath.text(), "JSON (*.json)")
@@ -110,21 +117,24 @@ class ScenarioDialog(QDialog):
             self.loadScenario(path)
 
     def loadScenario(self, path):
+        self.scenarioCleared.emit()
         self.scenario = None
         self.scenarioPath.setText(str(path))
         self.preview.clear()
         self.runButton.setEnabled(False)
+        self.applyButton.setEnabled(False)
         try:
             self.scenario = json.loads(Path(path).read_text(encoding="utf-8-sig"))
             self.preview.setPlainText(json.dumps(self.scenario, ensure_ascii=False, indent=2))
             self.tabs.setCurrentWidget(self.preview)
-            return self.validate()
+            return self.applyToMain()
         except Exception as error:
             self.status.setText(f"로드 실패: {error}")
             return False
 
     def validate(self):
         self.runButton.setEnabled(False)
+        self.applyButton.setEnabled(False)
         try:
             if self.scenario is None or not self.fmuPath.text():
                 self.status.setText("FMU와 JSON 시나리오를 모두 선택하세요.")
@@ -133,10 +143,17 @@ class ScenarioDialog(QDialog):
             _, count = validate_scenario(self.scenario, md)
             self.status.setText(f"검증 완료: {count} 스텝 / 통신 간격 {self.scenario['step_size']}초")
             self.runButton.setEnabled(True)
+            self.applyButton.setEnabled(True)
             return True
         except Exception as error:
             self.status.setText(f"검증 실패: {error}")
             return False
+
+    def applyToMain(self):
+        if not self.validate():
+            return False
+        self.scenarioApplied.emit(self.fmuPath.text(), self.scenarioPath.text())
+        return True
 
     def chooseOutput(self):
         path = QFileDialog.getExistingDirectory(self, "결과 저장 위치", self.outputPath.text())
@@ -168,6 +185,7 @@ class ScenarioDialog(QDialog):
         for widget in (self.fmuButton, self.loadButton, self.outputButton, self.outputPath):
             widget.setEnabled(not busy)
         self.runButton.setEnabled(not busy and self.scenario is not None)
+        self.applyButton.setEnabled(not busy and self.scenario is not None)
         self.cancelButton.setEnabled(busy)
 
     def cancelRun(self):
