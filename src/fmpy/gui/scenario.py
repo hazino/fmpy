@@ -5,7 +5,6 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-import pyqtgraph as pg
 from PySide6.QtCore import QThread, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineE
 
 from fmpy import read_model_description
 from fmpy.scenario import run_scenario, validate_scenario
+from .scenario_results import ScenarioResults
 
 
 class ScenarioWorker(QThread):
@@ -75,10 +75,7 @@ class ScenarioDialog(QDialog):
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         self.tabs.addTab(self.preview, "시나리오")
-        self.plot = pg.PlotWidget()
-        self.plot.setLabel("bottom", "Time", units="s")
-        self.plot.showGrid(x=True, y=True)
-        self.plot.addLegend()
+        self.plot = ScenarioResults()
         self.tabs.addTab(self.plot, "결과 그래프")
         self.report = QTextEdit()
         self.report.setReadOnly(True)
@@ -181,11 +178,7 @@ class ScenarioDialog(QDialog):
     def completed(self, result, directory):
         self.result, self.resultDirectory = result, directory
         rows = result["samples"]
-        times = [row["time"] for row in rows]
-        for i, name in enumerate(self.scenario["outputs"]):
-            if rows and isinstance(rows[0][name], (int, float, bool)):
-                self.plot.plot(times, [float(row[name]) for row in rows],
-                               name=name, pen=pg.mkPen(pg.intColor(i), width=2))
+        self.plot.setResult(rows, self.scenario["outputs"])
         report = {k: v for k, v in result.items() if k != "samples"}
         self.report.setPlainText(json.dumps(report, ensure_ascii=False, indent=2) + "\n\n" + directory)
         verdict = "합격" if result["passed"] is True else "실패" if result["passed"] is False else "판정 기준 없음"

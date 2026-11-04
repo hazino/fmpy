@@ -39,7 +39,7 @@ def test_gui_load_run_and_reject_invalid(app, reference_fmus_dist_dir, tmp_path)
     assert dialog.result["passed"] is True
     assert dialog.result["samples"][-1]["Float64_continuous_output"] == 10
     assert dialog.openResultsButton.isEnabled()
-    assert len(dialog.plot.listDataItems()) == 1
+    assert len(dialog.plot.graphs[0].plot.listDataItems()) == 1
     from pathlib import Path
     directory = Path(dialog.resultDirectory)
     assert (directory / "results.csv").is_file()
@@ -63,3 +63,37 @@ def test_cancel_cleans_up(reference_fmus_dist_dir):
     with pytest.raises(RuntimeError, match="cancelled"):
         run_scenario(path, scenario, cancelled=lambda: True)
     assert len(run_scenario(path, scenario)["samples"]) == 11
+
+
+def test_multiple_graph_selection_expansion_and_reset(app):
+    from PySide6.QtCore import Qt
+    from fmpy.gui.scenario_results import ScenarioResults, ResultGraph
+    viewer = ScenarioResults()
+    rows = [{"time": 0, "speed": 0, "enabled": False, "label": "idle"},
+            {"time": 1, "speed": 10, "enabled": True, "label": "run"}]
+    viewer.setResult(rows, ["speed", "enabled", "label"])
+    first = viewer.graphs[0]
+    assert first.selectedNames() == ["speed", "enabled"]
+    first.variables.item(1).setCheckState(Qt.Unchecked)
+    assert len(first.plot.listDataItems()) == 1
+    second = viewer.addGraph(["enabled"])
+    assert second.selectedNames() == ["enabled"]
+    assert first.selectedNames() == ["speed"]
+    second.search.setText("speed")
+    assert second.variables.item(1).isHidden()
+    assert len(second.plot.listDataItems()) == 1  # filtering does not change selection
+    expanded = viewer.expandGraph(first)
+    app.processEvents()
+    enlarged = expanded.findChild(ResultGraph)
+    assert enlarged.selectedNames() == ["speed"]
+    enlarged.selectAll(True)
+    assert first.selectedNames() == ["speed"]
+    viewer.removeGraph(second)
+    assert len(viewer.graphs) == 1
+    assert not first.removeButton.isEnabled()
+    viewer.setResult(rows, ["label"])
+    app.processEvents()
+    assert not viewer.expanded
+    assert not viewer.graphs
+    assert not viewer.addButton.isEnabled()
+    viewer.close()
