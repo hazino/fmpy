@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "communication_step_mismatch_warns",
+  "description": "T (the controller's own sample time, used directly in the integral and derivative formulas) is set to 0.02 here while the scenario's communication step_size is 0.01. pid_fmi2.c checks for exactly this mismatch in fmi2DoStep and reports it through the FMU's own logger every step -- run with --debug-logging (CLI) or inspect report.json's fmu_log/summary.log_warnings after running to see it. This is not a bug in the controller; it is the wrapper catching a configuration mistake the way a real exported model should. Verified: 10 warnings for 10 steps.",
+  "metadata": {"derived_from": "src/pid_fmi2.c fmi2DoStep, the T/communicationStepSize consistency check", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 0.1,
+  "step_size": 0.01,
+  "initial": {"setpoint": 1.0, "T": 0.02},
+  "outputs": ["output"],
+  "checks": [
+    {"id": "sanity-bound", "variable": "output", "min": -10.0, "max": 10.0,
+     "description": "A loose sanity bound; the point of this scenario is fmu_log, not this check."}
+  ]
+}

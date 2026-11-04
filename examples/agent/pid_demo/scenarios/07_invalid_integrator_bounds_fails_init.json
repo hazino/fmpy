@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "name": "invalid_integrator_bounds_fails_init",
+  "description": "limMinInt > limMaxInt is a nonsensical configuration -- the anti-windup clamp in PID.c would run backwards. pid_fmi2.c checks this at fmi2ExitInitializationMode and refuses to initialize, logging the reason through the FMU's own logger. THIS SCENARIO IS EXPECTED TO FAIL: running it should return ok=false with error code 'fmi_call_failed' (or, from the plain CLI, exit code 2 with the FMU's log message), not a crash and not a silent wrong answer. It demonstrates the runner's error-handling path on a real native rejection, distinct from a failed numeric check.",
+  "metadata": {"derived_from": "src/pid_fmi2.c fmi2ExitInitializationMode, the limMinInt/limMaxInt validity check", "author": "Claude (Sonnet 5), reading the source directly", "expected_outcome": "fmi_call_failed"},
+  "start_time": 0.0,
+  "stop_time": 0.05,
+  "step_size": 0.01,
+  "initial": {"limMinInt": 5.0, "limMaxInt": -5.0},
+  "outputs": ["output"]
+}

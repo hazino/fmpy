@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "setpoint_step_no_derivative_kick",
+  "description": "setpoint steps from 0 to 5; measurement never moves. PID.c's comment says the derivative is computed on measurement, 'therefore minus sign in front of equation', specifically so a setpoint change alone never excites it (avoiding 'derivative kick', a classic PID design point). This asserts differentiator_state is exactly 0 for the whole run -- a precise, code-derived invariant that no XML dependency declaration could state on its own (contrast with 02, where moving measurement instead does excite it).",
+  "metadata": {"derived_from": "src/PID.c PIDController_Update, the comment on derivative-on-measurement", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 1.0,
+  "step_size": 0.01,
+  "initial": {"setpoint": 0.0, "measurement": 0.0},
+  "events": [
+    {"id": "step", "time": 0.2, "set": {"setpoint": 5.0}}
+  ],
+  "outputs": ["differentiator_state", "output"],
+  "checks": [
+    {"id": "no-derivative-kick-from-setpoint", "variable": "differentiator_state", "min": 0.0, "max": 0.0,
+     "description": "Must stay exactly 0: the derivative term never sees a setpoint change, only a measurement change."}
+  ]
+}

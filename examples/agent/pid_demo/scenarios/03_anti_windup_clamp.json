@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "anti_windup_clamp",
+  "description": "A huge, sustained error (setpoint=100, measurement=0 for the whole run) would mathematically drive the integrator far past any sane bound. PID.c clamps it to [limMinInt, limMaxInt] = [-5, 5] every step (anti-windup). This checks that clamp directly on integrator_state -- something the declared XML dependencies cannot tell you, only reading the clamping code can. Verified: integrator_state reaches exactly 5.0 and holds there.",
+  "metadata": {"derived_from": "src/PID.c PIDController_Update, the anti-wind-up clamp on pid->integrator", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 3.5,
+  "step_size": 0.01,
+  "initial": {"setpoint": 100.0, "measurement": 0.0},
+  "outputs": ["integrator_state", "output"],
+  "checks": [
+    {"id": "integrator-never-exceeds-declared-limit", "variable": "integrator_state", "min": -5.0, "max": 5.0,
+     "description": "limMinInt/limMaxInt are both 5 in magnitude by default; this is the anti-windup invariant itself."}
+  ]
+}

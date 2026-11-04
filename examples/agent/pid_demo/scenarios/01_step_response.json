@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "step_response",
+  "description": "Setpoint steps from 0 to 3 while measurement stays at 0, below the point where output saturates (Kp*error = 2*3 = 6 < limMax = 10). Shows the proportional kick at t=0.2 plus the integral term ramping on top of it. Read from PID.c: out = Kp*error + integrator + differentiator, clamped to [limMin, limMax].",
+  "metadata": {"derived_from": "src/PID.c PIDController_Update", "author": "Claude (Sonnet 5), reading the source directly"},
+  "start_time": 0.0,
+  "stop_time": 1.0,
+  "step_size": 0.01,
+  "initial": {"setpoint": 0.0, "measurement": 0.0},
+  "events": [
+    {"id": "step", "time": 0.2, "set": {"setpoint": 3.0}}
+  ],
+  "outputs": ["output", "integrator_state", "error"],
+  "checks": [
+    {"id": "below-output-clamp", "variable": "output", "min": -0.01, "max": 10.0,
+     "description": "Chosen small enough that output never hits limMax; verified max is ~7.19."}
+  ]
+}

@@ -4,6 +4,8 @@
 추가 실행기는 FMI 2.0 Co-Simulation 전용이며 기존 FMPy 기능은 유지합니다.
 FMU 내부 구현을 몰라도 사용할 수 있지만 변수 의미·단위·정상 동작 기준은
 시험 작성자가 알아야 합니다. 시나리오 GUI를 제공하며 AI, Ollama, 채팅 기능은 포함하지 않습니다.
+프로그램이나 에이전트가 붙는 JSON 전용 도구 계층은 `fmpy.scenario_agent`이며
+사용법은 [에이전트 연동 구조](agent-integration-ko.md)에 있습니다.
 
 ## 설치 (Windows PowerShell, Python 3.10 이상)
 
@@ -42,6 +44,17 @@ python -m venv .venv
 
 GUI에서는 도구 모음의 **Scenario...** → **FMU 선택...** → **시나리오 로드...** →
 **시나리오 실행** 순서로 사용합니다. 메인 창에서 연 FMU는 자동 선택됩니다.
+
+직접 JSON을 작성하지 않고 FMU가 선언한 구조에서 시나리오 후보를 보려면
+**시나리오 제안 보기...** 를 누릅니다. FMU만 선택되어 있으면 되고 JSON 로드는
+필요 없습니다. 제안 목록(스모크 테스트, 입력별 계단 변경, 의존 관계 커버리지,
+파라미터 한계값)이 표로 나오고, 체크박스로 원하는 것만 골라 **선택 실행**할 수
+있습니다. 실행은 자동으로 진행되지 않고 사용자가 고른 것만 실제 FMU로 돌립니다.
+행을 선택하면 아래 패널에 근거·대상 변수·필요한 도메인 정보·(실행했다면) 결과
+요약과 저장 위치가 나옵니다. 이 제안들에는 **합격 기준이 없습니다** — FMU는
+자기가 무엇을 해야 하는지 말하지 않으므로, 결과는 "제대로 도는지"만 보여주고
+"맞는지"는 직접 판단해야 합니다. 결과는 FMU 하나당, 제안 하나당 실행 시각별
+폴더에 CSV/report.json/scenario.json으로 저장됩니다.
 유효한 JSON을 로드하면 메인 재생에도 자동 적용됩니다. 창을 닫은 뒤 메인 화면의
 재생을 누르면 적용된 시나리오를 실행하고 결과 창을 엽니다. 도구 모음에 적용된
 시나리오 이름이 표시되며 **시나리오 해제**로 기본 실행으로 돌아갑니다.
@@ -75,13 +88,36 @@ GUI의 실행 설정은 JSON을 기준으로 하며 기본 Simulate 설정과 �
 
 # 시험 실행
 .\.venv\Scripts\python -m fmpy.scenario model.fmu scenario.json --output results/run-001
+
+# FMU의 디버그 로그 메시지까지 요청
+.\.venv\Scripts\python -m fmpy.scenario model.fmu scenario.json --debug-logging
 ```
 
-`results.csv`는 통신 시점별 측정값, `report.json`은 범위 판정·종료 이유·발생한
-규칙 인덱스를 담습니다. 출력 폴더가 같으면 결과 파일을 덮어씁니다.
+FMU가 선언한 구조에서 시나리오 후보를 뽑으려면 `plan`을 씁니다.
+
+```powershell
+.\.venv\Scripts\python -m fmpy.scenario_agent plan --fmu model.fmu
+```
+
+`results.csv`는 통신 시점별 측정값, `report.json`은 판정·종료 이유·발생한 규칙과
+그 이유·출력별 요약·FMU 로그를 담고, `scenario.json`은 실행한 시나리오를 그대로
+남깁니다. 출력 폴더가 같으면 결과 파일을 덮어씁니다.
 종료 코드: 정상 완료/검증 성공 0, 판정 실패 1, 잘못된 입력 2.
-네이티브 실행 오류는 예외로 전달되며 성공 보고서를 생성하지 않습니다.
-판정 기준이 없으면 `passed`는 `null`입니다. 실행 성공을 시험 합격으로 간주하지 않습니다.
+검증 실패는 사람이 읽는 문장 대신 `{"errors": [{"code", "path", "message"}]}` JSON을
+표준 오류로 출력합니다. 네이티브 실행 오류는 예외로 전달되며 성공 보고서를 만들지
+않습니다. 판정 기준이 없으면 `passed`는 `null`입니다. 실행 성공을 시험 합격으로
+간주하지 않습니다.
+
+`report.json`에 들어가는 항목:
+
+- `summary.outputs[변수]`: 수치는 min/max와 그 시각, 첫값·끝값·평균·비유한값 개수.
+  Boolean/String은 변화 시점(최대 20개), Boolean은 true/false 개수, String은 서로 다른 값.
+- `checks[]`: `passed`, `first_failure_time`, `failure_count`, `margin`(통과 시 남은 여유,
+  실패 시 넘어간 폭의 음수), `worst`, `worst_time`.
+- `rule_events[]`: 발생 시각, 조건, 그 시점의 실제 값 `trigger.actual`, 적용한 입력, 중지 여부.
+- `fmu_log[]`: FMU가 자기 로거로 보낸 메시지를 시각·등급·카테고리와 함께 최대 200건.
+  개수는 `summary.log_errors`/`log_warnings`로 먼저 확인합니다.
+- `termination`: `stop_time`, `rule`, `fmu_terminated` 중 하나.
 
 ## 시나리오 예시
 
@@ -118,6 +154,9 @@ GUI의 실행 설정은 JSON을 기준으로 하며 기본 Simulate 설정과 �
 - 시작 시각 이벤트는 초기화 전에 initial을 덮어씁니다.
 - 각 통신 시점에는 먼저 결과를 기록하고, 시간 이벤트를 적용한 후 조건을 평가합니다.
   따라서 t에서 바꾼 입력의 계산 결과는 일반적으로 다음 기록에서 확인합니다.
+- `name`, `description`, `metadata`는 선택 항목입니다. `events`/`rules`/`checks`의 각
+  항목에는 `id`와 `description`을 붙일 수 있고 `id`는 배열 안에서 유일해야 합니다.
+  `metadata`는 보고서에 그대로 보존되고 `id`는 `rule_events`·`checks`에 나타납니다.
 - `rules`는 통신 시점에만 평가하며 각 규칙은 최대 한 번 실행됩니다.
   지원 연산자는 `==`, `!=`, `>`, `>=`, `<`, `<=`입니다.
   Boolean/String에는 동등·부등 비교만 가능합니다.
@@ -132,6 +171,13 @@ GUI의 실행 설정은 JSON을 기준으로 하며 기본 Simulate 설정과 �
   설정값을 검사합니다. 단위 변환은 하지 않습니다.
 - 입력 이름·자료형·쓰기 권한, 알 수 없는 옵션, NaN/Infinity, 비정상 시간값을 거부합니다.
   FMI 1/3 또는 Model Exchange 전용 FMU는 실행하지 않습니다.
+- 검증은 서로 독립적인 문제를 **한 번에 모두** 보고합니다. 각 문제는 고정된 `code`와
+  시나리오 안의 위치 `path`(예: `events[2].set.u`)를 가지며, 변수 이름이 틀린 경우
+  가까운 후보를 `candidates`로 함께 돌려줍니다.
+- FMU가 doStep을 discard하면서 종료를 요청하면 수집한 결과와 판정을 유지한 채
+  `termination`을 `fmu_terminated`로 보고합니다. 오류로 처리하지 않습니다.
+- Boolean 출력은 JSON의 `true`/`false`로 기록합니다(이전에는 1/0). 시나리오에 쓰는
+  Boolean 표기와 같아지므로 기록한 값을 그대로 다시 설정할 수 있습니다.
 
 ## Python 및 향후 AI 연결
 
@@ -148,16 +194,23 @@ result = run_scenario("model.fmu", scenario)
 문서를 별도로 제공하고 생성된 JSON을 이 실행기로 검증·실행하면 됩니다.
 실행기는 자연어 해석이나 임의 Python 실행을 수행하지 않습니다.
 
+JSON Schema와 실행기 능력 선언은 `fmpy.scenario_schema`에 있고
+`python -m fmpy.scenario_agent schema`로 꺼냅니다. 모델에 줄 근거 자료는
+`context` 도구가 한 객체로 만들어 줍니다. 자세한 절차는
+[에이전트 연동 구조](agent-integration-ko.md)를 보십시오.
+
 현재 형식은 고정 통신 간격, hold 입력, 단일 조건·일회성 동작과 범위 판정을
 지원합니다. 램프/선형 보간, 조건 유지 시간, 조건 충족 후 지연, 복합 조건,
 롤백·비동기 stepping·여러 FMU 결합은 후속 확장 범위입니다.
+램프 입력은 기존 CSV 입력 경로(`simulate_fmu(input=...)`)만 지원합니다.
+두 기능의 차이는 에이전트 연동 문서의 비교 표에 정리했습니다.
 이벤트 검출 정확도는 통신 간격에 제한됩니다. 대상 OS/CPU에 맞는 FMU 바이너리와
 외부 의존성이 필요하며, 해당 FMU가 선택한 고정 간격을 수용해야 합니다.
 
 ## 검증
 
 ```powershell
-.\.venv\Scripts\python -m pytest tests/test_scenario.py -q
+.\.venv\Scripts\python -m pytest tests/test_scenario.py tests/test_scenario_agent.py tests/test_scenario_gui.py -q
 ```
 
 테스트는 공식 Reference-FMUs v0.0.39를 다운로드하고 기존 FMPy fixture의
