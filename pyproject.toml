@@ -25,11 +25,13 @@ plot = [
     "scipy>=1.14.1",
 ]
 gui = [
+    "typing-extensions>=4.4.0",
     "pyqtgraph>=0.13.7",
     "pyside6>=6.8.0.2",
     "pywin32>=308; sys_platform == 'win32'",
 ]
 complete = [
+    "typing-extensions>=4.4.0",
     "dash-bootstrap-components>=2.0.1",
     "dask[bag]>=2024.11.2",
     "requests>=2.32.3",

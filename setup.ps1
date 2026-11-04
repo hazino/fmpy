@@ -40,7 +40,7 @@ try {
     Invoke-Checked $venvPython @('-m', 'pip', 'check')
 
     Write-Host '[5/5] Checking the GUI and scenario runner...'
-    Invoke-Checked $venvPython @('-c', "import fmpy, fmpy.gui, fmpy.scenario, pyqtgraph, win32api; from PySide6.QtWidgets import QApplication; app = QApplication(['setup-check', '-platform', 'offscreen']); print('Ready: FMPy ' + fmpy.__version__); print(fmpy.__file__)")
+    Invoke-Checked $venvPython @((Join-Path $repoRoot 'scripts\check_gui.py'))
     Write-Host ''
     Write-Host 'Setup complete. Start the GUI with: .\start-fmpy.ps1'
     if ($Launch) {
