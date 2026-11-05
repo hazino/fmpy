@@ -428,14 +428,10 @@ class MainWindow(QMainWindow):
 
         self.contextMenu.exec_(currentView.mapToGlobal(point))
 
-    def openScenario(self):
+    def ensureScenarioDialog(self):
+        """Create the (single, reused) scenario window, or point it at the current FMU."""
         from .scenario import ScenarioDialog
 
-        self.scenarioStartedFromMain = False
-
-        if self.simulationThread is not None and self.simulationThread.isRunning():
-            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
-            return
         if self.scenarioDialog is None:
             self.scenarioDialog = ScenarioDialog(self.filename, self)
             self.scenarioDialog.scenarioApplied.connect(self.applyScenario)
@@ -444,23 +440,31 @@ class MainWindow(QMainWindow):
         elif self.activeScenario is None and self.filename:
             self.scenarioDialog.fmuPath.setText(str(self.filename))
             self.scenarioDialog.validate()
-        self.scenarioDialog.exec()
+        return self.scenarioDialog
+
+    def openScenario(self):
+        self.scenarioStartedFromMain = False
+
+        if self.simulationThread is not None and self.simulationThread.isRunning():
+            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
+            return
+        self.ensureScenarioDialog().exec()
 
     def openAgentChat(self):
-        from .agent_chat import AgentChatDialog
-
         if self.simulationThread is not None and self.simulationThread.isRunning():
             QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
             return
-        AgentChatDialog(self.filename, self).exec()
+        dialog = self.ensureScenarioDialog()
+        dialog.showAgentChatTab()
+        dialog.exec()
 
     def openBatch(self):
-        from .scenario_batch import ScenarioBatchDialog
-
         if self.simulationThread is not None and self.simulationThread.isRunning():
             QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
             return
-        ScenarioBatchDialog(self.filename, self).exec()
+        dialog = self.ensureScenarioDialog()
+        dialog.showBatchTab()
+        dialog.exec()
 
     def showScenarioResult(self, result):
         import numpy as np

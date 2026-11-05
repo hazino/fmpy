@@ -8,14 +8,17 @@ seven hand-authored ones in examples/agent/pid_demo/scenarios/ -- and expects
 most of them to actually carry checks. The point is the aggregate: how many
 passed, how many failed, how many have no verdict, how many could not even
 run, in one place, rather than reading seven separate report.json files.
+
+A plain QWidget (despite the class's name), so ScenarioDialog can embed it as
+one of its own tabs instead of popping it up as a separate window.
 """
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
+from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                               QTextEdit, QVBoxLayout)
+                               QTextEdit, QVBoxLayout, QWidget)
 
 from fmpy.scenario_agent import run_many
 
@@ -41,7 +44,7 @@ class BatchRunner(QThread):
         self.allFinished.emit(envelope)
 
 
-class ScenarioBatchDialog(QDialog):
+class ScenarioBatchDialog(QWidget):
     """Pick several scenario files, run the checked ones, read off one summary."""
 
     def __init__(self, fmu=None, parent=None):
@@ -302,14 +305,11 @@ class ScenarioBatchDialog(QDialog):
             Path(path).write_text(self.lastReport, encoding="utf-8")
             self.summaryLabel.setText(f"보고서 저장함: {path}")
 
-    def reject(self):
-        if self.worker is not None and self.worker.isRunning():
-            self.cancelRun()
-            return
-        super().reject()
+    def isBusy(self):
+        return self.worker is not None and self.worker.isRunning()
 
     def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
+        if self.isBusy():
             self.cancelRun()
             event.ignore()
         else:

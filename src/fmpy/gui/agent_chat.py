@@ -3,9 +3,12 @@
 The user types a request in words; a model (local Ollama, or Claude via the
 Anthropic API) turns it into a scenario, fmpy.scenario_agent.validate checks
 it, and fmpy.scenario_agent.run executes it against the real FMU. The model
-never touches the FMU directly -- this dialog only ever shows what the model
+never touches the FMU directly -- this panel only ever shows what the model
 produced and what actually happened when it ran, the same separation the CLI
 loops in examples/agent/ enforce.
+
+A plain QWidget (despite the class's name), so ScenarioDialog can embed it
+as one of its own tabs instead of popping it up as a separate window.
 """
 import html
 import json
@@ -14,11 +17,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QTabWidget, QTextEdit, QVBoxLayout,
                                QWidget)
 
 from fmpy.scenario_backends import ollama_models, run_with_claude, run_with_ollama
+from . import agent_settings
 from .scenario_results import ScenarioResults
 
 #: Passed to scenario_agent.run so every recorded row comes back for plotting,
@@ -54,7 +58,7 @@ class AgentChatWorker(QThread):
         self.resultReady.emit(result)
 
 
-class AgentChatDialog(QDialog):
+class AgentChatDialog(QWidget):
     """Pick a backend, type a request, watch it generate/validate/run against the FMU."""
 
     def __init__(self, fmu=None, parent=None):
@@ -65,6 +69,7 @@ class AgentChatDialog(QDialog):
         self.turn = 0
         self.lastScenario = None
         self.lastDirectory = None
+        self.settings = agent_settings.load()
 
         layout = QVBoxLayout(self)
 
@@ -81,13 +86,17 @@ class AgentChatDialog(QDialog):
         backendRow = QHBoxLayout()
         self.backendCombo = QComboBox()
         self.backendCombo.addItems(["Ollama (로컬)", "Claude (API)"])
+        self.backendCombo.setCurrentIndex(0 if self.settings["backend"] == "ollama" else 1)
         self.backendCombo.currentIndexChanged.connect(self.onBackendChanged)
-        self.hostEdit = QLineEdit("http://localhost:11434")
+        self.hostEdit = QLineEdit(self.settings["ollama_host"])
         self.hostEdit.editingFinished.connect(self.refreshModels)
         self.modelCombo = QComboBox()
         self.modelCombo.setEditable(True)
         self.refreshModelsButton = QPushButton("모델 목록 새로고침")
         self.refreshModelsButton.clicked.connect(self.refreshModels)
+        self.settingsButton = QPushButton("설정...")
+        self.settingsButton.setToolTip("기본 백엔드·모델·API 키·결과 폴더를 설정합니다.")
+        self.settingsButton.clicked.connect(self.openSettings)
         backendRow.addWidget(QLabel("백엔드"))
         backendRow.addWidget(self.backendCombo)
         backendRow.addWidget(QLabel("Host"))
@@ -95,10 +104,12 @@ class AgentChatDialog(QDialog):
         backendRow.addWidget(QLabel("모델"))
         backendRow.addWidget(self.modelCombo, 1)
         backendRow.addWidget(self.refreshModelsButton)
+        backendRow.addWidget(self.settingsButton)
         layout.addLayout(backendRow)
 
         outputRow = QHBoxLayout()
-        self.outputPath = QLineEdit(str(Path.cwd() / "scenario-results" / "agent-chat"))
+        self.outputPath = QLineEdit(
+            self.settings["output_root"] or str(Path.cwd() / "scenario-results" / "agent-chat"))
         self.outputButton = QPushButton("저장 위치...")
         self.outputButton.clicked.connect(self.chooseOutput)
         outputRow.addWidget(QLabel("결과 폴더"))
@@ -145,9 +156,23 @@ class AgentChatDialog(QDialog):
 
         self.appendSystem("모델은 시나리오 JSON만 만듭니다. 검증과 실제 FMU 실행은 항상 이 코드가 "
                           "직접 하고, 판정 기준이 없는 요청은 '판정 기준 없음'으로 표시됩니다.")
-        self.onBackendChanged(0)
+        self.onBackendChanged(self.backendCombo.currentIndex())
 
     # -- setup -------------------------------------------------------------
+
+    def openSettings(self):
+        dialog = agent_settings.AgentSettingsDialog(self)
+        dialog.saved.connect(self.applySettings)
+        dialog.exec()
+
+    def applySettings(self, values):
+        self.settings = values
+        self.backendCombo.setCurrentIndex(0 if values["backend"] == "ollama" else 1)
+        self.hostEdit.setText(values["ollama_host"])
+        if values["output_root"]:
+            self.outputPath.setText(values["output_root"])
+        self.onBackendChanged(self.backendCombo.currentIndex())
+        self.appendSystem("설정을 반영했습니다.")
 
     def chooseFmu(self):
         path, _ = QFileDialog.getOpenFileName(self, "FMU 선택", self.fmuPath.text(), "FMU (*.fmu)")
@@ -167,9 +192,10 @@ class AgentChatDialog(QDialog):
         if ollama:
             self.refreshModels()
         else:
-            self.modelCombo.addItem("claude-sonnet-5")
-            self.appendSystem("Claude 백엔드는 환경 변수 ANTHROPIC_API_KEY와 "
-                              "`pip install anthropic`이 필요합니다.")
+            self.modelCombo.addItem(self.settings["claude_model"])
+            if not self.settings["claude_api_key"]:
+                self.appendSystem("Claude 백엔드는 환경 변수 ANTHROPIC_API_KEY와 "
+                                  "`pip install anthropic`이 필요합니다(설정에서 키를 저장해도 됨).")
 
     def refreshModels(self):
         if self.backendCombo.currentIndex() != 0:
@@ -179,7 +205,7 @@ class AgentChatDialog(QDialog):
         if models:
             self.modelCombo.addItems(models)
         else:
-            self.modelCombo.addItem("gemma:2b")
+            self.modelCombo.addItem(self.settings["ollama_model"])
             self.appendSystem(f"Ollama({self.hostEdit.text()})에 연결할 수 없어 기본값을 둡니다.")
 
     # -- transcript ----------------------------------------------------------
@@ -222,10 +248,13 @@ class AgentChatDialog(QDialog):
         if self.backendCombo.currentIndex() == 0:
             backend = "ollama"
             kwargs = {**common, "host": self.hostEdit.text(),
-                     "model": self.modelCombo.currentText()}
+                     "model": self.modelCombo.currentText(),
+                     "max_attempts": self.settings["ollama_max_attempts"]}
         else:
             backend = "claude"
-            kwargs = {**common, "model": self.modelCombo.currentText()}
+            kwargs = {**common, "model": self.modelCombo.currentText(),
+                     "max_turns": self.settings["claude_max_turns"],
+                     "api_key": self.settings["claude_api_key"] or None}
 
         self.setBusy(True)
         self.worker = AgentChatWorker(backend, kwargs, self)
@@ -290,14 +319,11 @@ class AgentChatDialog(QDialog):
                                   encoding="utf-8")
             self.appendSystem(f"저장함: {path}")
 
-    def reject(self):
-        if self.worker is not None and self.worker.isRunning():
-            self.cancelRun()
-            return
-        super().reject()
+    def isBusy(self):
+        return self.worker is not None and self.worker.isRunning()
 
     def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
+        if self.isBusy():
             self.cancelRun()
             event.ignore()
         else:

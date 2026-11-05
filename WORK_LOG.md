@@ -454,6 +454,63 @@ tests/test_scenario_batch_gui.py -q` → **104 passed**(기존 87 + 신규 17).
 
 미완료: 이번에도 **커밋/푸시는 안 했다** — 요청 시 진행.
 
+### 추가 변경: 에이전트 요청/배치 실행을 시나리오 창에 통합 + 에이전트 설정 GUI (같은 세션, 이어서)
+
+사용자 요청: "여러시나리오 요청을 기존 scenario 에 통합해줘. 에이전트 요청도
+마찬가지." 그 다음 "그리고 ai 에이전트 설정을 gui에서 할 수 있게해줘."
+
+- **통합**: `AgentChatDialog`/`ScenarioBatchDialog`를 별도 팝업(QDialog)에서
+  `ScenarioDialog`가 직접 품는 탭(QWidget)으로 바꿨다. 클래스 이름은 혼란을
+  줄이려고(기존 테스트가 이 이름으로 많이 참조) 그대로 두고 **베이스 클래스만
+  QDialog→QWidget으로 교체**, `reject()`는 QWidget에 없는 메서드라 제거하고
+  `isBusy()` 헬퍼를 추가해 부모가 "이 탭이 지금 돌고 있는가"를 물어볼 수 있게
+  했다. `ScenarioDialog`에 탭 2개 추가(`에이전트에게 요청`, `여러 시나리오
+  실행`, 총 5탭), 기존 "에이전트에게 요청.../여러 시나리오 실행..." 버튼은
+  제거(제안 보기 버튼은 요청에 없어 그대로 둠). FMU는 `ScenarioDialog.fmuPath`
+  의 `textChanged` 시그널에 `syncFmu()`를 연결해 **누가 바꿔도**(내부
+  버튼이든 MainWindow가 직접 `.setText()`하든) 두 탭에 자동 전파.
+  `ScenarioDialog.reject()`/`closeEvent()`가 자기 워커뿐 아니라 두 탭의
+  `isBusy()`도 확인하도록 확장(돌고 있으면 취소 요청하고 닫기 거부) —
+  하나의 탭이 실행 중인데 창을 닫으면 QThread가 고아로 남는 위험을 막음.
+  `MainWindow`는 `ensureScenarioDialog()`(기존 `openScenario`의 생성/재사용
+  로직을 분리) → `showAgentChatTab()`/`showBatchTab()`으로 전환 후 `.exec()`
+  하도록 바꿔, 툴바 버튼은 그대로 두되 전부 **같은 통합 창**을 열게 했다.
+  실제로 임베드된 탭에서 배치를 돌려 확인(요약 라벨 정상 집계).
+- **에이전트 설정**: `src/fmpy/gui/agent_settings.py` (신규).
+  `load()`/`save()`가 `QSettings(QSettings.IniFormat, QSettings.UserScope,
+  "fmpy", "scenario_agent")`로 **레지스트리가 아니라 INI 파일**에 저장(경로
+  투명성을 위해 의도적으로 IniFormat 선택). `AgentSettingsDialog`:
+  기본 백엔드, Ollama Host/기본 모델/최대 재시도 횟수, Claude 기본 모델/
+  API 키(선택, `QLineEdit.Password` 에코, 평문 저장됨을 툴팁에 명시)/최대
+  턴 수, 기본 결과 폴더. `AgentChatDialog`에 "설정..." 버튼 추가 → 저장 시
+  `applySettings()`가 백엔드/호스트/모델/출력 폴더를 즉시 반영하고 설정을
+  `send()`가 쓰는 kwargs(`max_attempts`, `max_turns`, `api_key`)에 꽂음.
+  `scenario_backends.run_with_claude`에 `api_key=None` 파라미터 추가 —
+  주어지면 `anthropic.Anthropic(api_key=...)`, 없으면 기존처럼 환경 변수
+  (CLI와 동일 동작, 하위 호환 깨지지 않음).
+- `tests/test_agent_settings.py` (신규, 7개): load 기본값, save가 지정한
+  키만 덮어씀, 타입 보존(int), 실제 INI 파일 생성 확인, 다이얼로그가 저장된
+  값을 정확히 반영, 저장 시 `saved` 시그널+영속화+Accepted 확인. 모든 테스트
+  `QSettings`를 `tmp_path` 기반 임시 파일로 monkeypatch해 **실제 사용자
+  설정 파일을 절대 건드리지 않음**(세션 간 오염 방지).
+- `tests/test_agent_chat.py`에 동일한 격리 픽스처(autouse) 추가 + 설정
+  연동 테스트 4개(설정 저장→채팅창 반영→재생성 시에도 유지, 취소 시
+  미저장, 실제 `send()` 호출에 `api_key`/`max_turns`가 전달되는지 워커를
+  가짜로 바꿔 확인) → 11개.
+- `tests/test_scenario_batch_gui.py`의 낡은 테스트(버튼 존재 확인)를 탭
+  임베드+FMU 동기화 확인으로 교체. `tests/test_scenario_gui.py`는 변경 없이
+  전부 재통과(하위 호환 확인).
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_gui.py
+tests/test_scenario_agent.py tests/test_pid_demo.py tests/test_agent_chat.py
+tests/test_scenario_batch_gui.py tests/test_agent_settings.py -q` →
+**114 passed**(기존 104 + 신규 10). `scripts/check_gui.py`로 실제
+`MainWindow`/`ScenarioDialog`(5탭 전부 포함) 생성 확인.
+
+미완료: 메인 툴바에 별도 "에이전트 설정..." 버튼은 추가하지 않았다 — 채팅
+탭 안의 "설정..." 버튼으로 충분하다고 판단(요청 범위를 벗어난 중복 UI
+방지). 이번에도 **커밋/푸시는 안 했다** — 요청 시 진행.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

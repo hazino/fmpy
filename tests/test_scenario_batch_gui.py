@@ -170,13 +170,18 @@ def test_cancel_stops_the_remaining_scenarios(app, reference_fmus_dist_dir, tmp_
     dialog.close()
 
 
-def test_reachable_from_scenario_dialog_and_main_window_toolbar(app, reference_fmus_dist_dir):
+def test_embedded_as_a_tab_in_scenario_dialog_and_kept_in_sync_with_its_fmu(
+        app, reference_fmus_dist_dir):
     path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    other = reference_fmus_dist_dir / "2.0" / "BouncingBall.fmu"
     sd = ScenarioDialog(str(path))
-    assert sd.batchButton.isEnabled()
-    sub = ScenarioBatchDialog(sd.fmuPath.text(), sd)
-    assert sub.fmuPath.text() == str(path)
-    sub.close()
+    assert sd.batchTab.fmuPath.text() == str(path)
+    sd.tabs.setCurrentWidget(sd.batchTab)
+    assert sd.tabs.currentWidget() is sd.batchTab
+
+    # Changing the FMU anywhere on the dialog updates the embedded tab too.
+    sd.fmuPath.setText(str(other))
+    assert sd.batchTab.fmuPath.text() == str(other)
     sd.close()
 
     window = MainWindow()

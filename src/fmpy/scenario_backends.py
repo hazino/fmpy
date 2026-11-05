@@ -171,8 +171,12 @@ def _claude_tools():
 
 
 def run_with_claude(fmu, request, model="claude-sonnet-5", max_turns=8, output=None,
-                    include_samples=0, on_log=None, cancelled=None):
+                    include_samples=0, on_log=None, cancelled=None, api_key=None):
     """Let Claude call context/validate/run itself via tool-calling. One result envelope.
+
+    ``api_key``, given, is passed to the client explicitly; omitted (the
+    default), the Anthropic SDK reads ANTHROPIC_API_KEY from the environment
+    on its own -- the usual way, and the only one the CLI scripts use.
 
     Raises ImportError if the ``anthropic`` package is not installed; the
     caller decides how to report that (the CLI and the GUI each word it
@@ -182,7 +186,7 @@ def run_with_claude(fmu, request, model="claude-sonnet-5", max_turns=8, output=N
 
     log = on_log or _NO_OP
     is_cancelled = cancelled or _NEVER
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     messages = [{"role": "user", "content": f"FMU: {fmu}\n\nTask: {request}"}]
     last_run_result, last_scenario = None, None
 

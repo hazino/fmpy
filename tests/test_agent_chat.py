@@ -13,8 +13,10 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PySide6")
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QFileDialog
 
+from fmpy.gui import agent_settings
 from fmpy.gui.agent_chat import AgentChatDialog
 from fmpy.gui.MainWindow import MainWindow
 from fmpy.scenario_backends import ollama_models
@@ -23,6 +25,14 @@ from fmpy.scenario_backends import ollama_models
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
+
+
+@pytest.fixture(autouse=True)
+def isolated_agent_settings(tmp_path, monkeypatch):
+    """Never read or write the real user's saved agent settings from a test."""
+    ini_path = tmp_path / "agent_settings.ini"
+    monkeypatch.setattr(agent_settings, "_settings",
+                        lambda: QSettings(str(ini_path), QSettings.IniFormat))
 
 
 @pytest.fixture(scope="module")
@@ -94,6 +104,19 @@ def test_main_window_exposes_the_toolbar_action(app):
     window.close()
 
 
+def test_main_window_toolbar_action_opens_the_scenario_dialogs_agent_tab(
+        app, reference_fmus_dist_dir):
+    window = MainWindow()
+    window.filename = str(reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu")
+    # Same as openAgentChat(), minus the blocking .exec() a headless test cannot close.
+    dialog = window.ensureScenarioDialog()
+    dialog.showAgentChatTab()
+    assert dialog.tabs.currentWidget() is dialog.agentChatTab
+    assert dialog.agentChatTab.fmuPath.text() == window.filename
+    dialog.close()
+    window.close()
+
+
 @pytest.mark.skipif(not ollama_models(), reason="no Ollama server with a pulled model reachable")
 def test_a_real_turn_generates_validates_and_runs_against_the_fmu(
         app, ollama_ready, reference_fmus_dist_dir, tmp_path):
@@ -132,4 +155,71 @@ def test_cancel_during_a_turn_leaves_the_dialog_usable(app, reference_fmus_dist_
     assert dialog.worker.wait(2000)
     app.processEvents()  # let the queued `finished` signal's slot (setBusy(False)) run
     assert dialog.sendButton.isEnabled()  # busy state was cleared
+    dialog.close()
+
+
+def test_settings_button_dialog_saves_and_the_chat_dialog_picks_it_up(app):
+    dialog = AgentChatDialog()
+    settings_dialog = agent_settings.AgentSettingsDialog(dialog)
+    settings_dialog.backendCombo.setCurrentIndex(1)  # Claude
+    settings_dialog.claudeModelEdit.setText("claude-opus-5")
+    settings_dialog.apiKeyEdit.setText("sk-test-123")
+    settings_dialog.maxTurnsSpin.setValue(3)
+    settings_dialog.outputEdit.setText(str(Path.cwd() / "custom-output"))
+
+    settings_dialog.saved.connect(dialog.applySettings)
+    settings_dialog.saveAndClose()
+
+    assert dialog.backendCombo.currentIndex() == 1
+    assert dialog.modelCombo.currentText() == "claude-opus-5"
+    assert dialog.settings["claude_api_key"] == "sk-test-123"
+    assert dialog.settings["claude_max_turns"] == 3
+    assert dialog.outputPath.text() == str(Path.cwd() / "custom-output")
+
+    # And it persisted: a freshly loaded dialog starts from the same values.
+    fresh = AgentChatDialog()
+    assert fresh.backendCombo.currentIndex() == 1
+    assert fresh.modelCombo.currentText() == "claude-opus-5"
+    dialog.close()
+    fresh.close()
+
+
+def test_settings_dialog_cancel_does_not_persist_anything(app):
+    before = agent_settings.load()
+    settings_dialog = agent_settings.AgentSettingsDialog()
+    settings_dialog.ollamaModelEdit.setText("qwen2.5")
+    settings_dialog.reject()
+    assert agent_settings.load() == before
+
+
+def test_a_turn_passes_the_configured_max_attempts_and_api_key_through(app, monkeypatch):
+    dialog = AgentChatDialog("model.fmu")
+    agent_settings.save({"backend": "claude", "claude_model": "claude-sonnet-5",
+                        "claude_api_key": "sk-configured", "claude_max_turns": 5})
+    dialog.settings = agent_settings.load()
+    dialog.applySettings(dialog.settings)
+    dialog.outputPath.setText(str(Path.cwd()))
+    dialog.input.setText("do something")
+
+    captured = {}
+
+    class FakeWorker:
+        def __init__(self, backend, kwargs, parent=None):
+            captured["backend"], captured["kwargs"] = backend, kwargs
+            self.logLine = type("S", (), {"connect": lambda *a: None})()
+            self.resultReady = type("S", (), {"connect": lambda *a: None})()
+            self.finished = type("S", (), {"connect": lambda *a: None})()
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return False
+
+    monkeypatch.setattr("fmpy.gui.agent_chat.AgentChatWorker", FakeWorker)
+    dialog.send()
+
+    assert captured["backend"] == "claude"
+    assert captured["kwargs"]["api_key"] == "sk-configured"
+    assert captured["kwargs"]["max_turns"] == 5
     dialog.close()
