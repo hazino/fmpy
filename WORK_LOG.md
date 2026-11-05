@@ -642,6 +642,78 @@ Ollama 실제 호출이 많아 전체 실행에 약 2분 30초 소요). `scripts
 (`analyze_scenarios.py`)는 Claude 백엔드를 실제 API로 검증하지 못함(이
 환경에 키/패키지 없음, 기존과 동일한 제약).
 
+### 추가 변경: 시나리오 창에 다중 선택 목록 통합, "여러 시나리오 실행" 탭 제거 (같은 세션, 이어서)
+
+사용자 요청: "지금 보면 시나리오를 하나 선택하는 구성이 기본인데 여러 JSON을
+선택할 수 있도록 해줘 그리고 여러 시나리오 실행 탭은 없애줘." 이어서(같은
+턴 중) "시나리오 창에 왼쪽에 트리로 보이도록하던지. 추가한 시나리오목록을
+볼 수 있게."
+
+**`src/fmpy/gui/scenario.py`를 다시 작성했다.** 핵심 설계 원칙: 기존
+단일 시나리오 흐름(`loadScenario(path)`가 파싱→미리보기→검증→메인 재생
+자동 적용까지 하던 동작, `validate()`/`startRun()`/`applyToMain()`과
+`scenarioApplied`/`scenarioCleared`/`resultReady` 신호)은 **한 글자도
+바꾸지 않았다** — `MainWindow`가 이름으로 직접 호출하고(`fmuPath`,
+`validate()`, `startRun()`) 기존 테스트가 이 동작을 정확히 검증하고
+있었기 때문. 그 위에 새 기능을 **추가**하는 방식으로 설계했다:
+
+- `QSplitter`로 창을 좌/우로 나눴다. 왼쪽은 새 **시나리오 목록** 사이드바
+  (`QTableWidget`, 체크박스 있는 행), 오른쪽은 기존과 같은 `QTabWidget`
+  (탭 4개로 줄었다 — 아래 참고).
+- **시나리오 로드...**는 `QFileDialog.getOpenFileNames`(복수 선택)로
+  바뀌었다. 여러 파일을 고르면 전부 목록에 추가되고(경로 기준 중복 제거),
+  새로 추가된 첫 파일이 자동으로 강조(select)된다 — 그 강조가
+  `onFileSelectionChanged()`를 거쳐 **기존 `loadScenario()`를 그대로**
+  호출한다. 즉 "목록에서 행 하나를 클릭 = 예전의 시나리오 로드"와 완전히
+  같은 동작(미리보기 갱신 + 검증 + 메인 재생 자동 적용 + 시나리오 탭으로
+  전환)이라서, 단일 파일만 쓰던 기존 테스트의 기대와 충돌하지 않는다.
+  **폴더에서 추가...**로 폴더의 `*.json`을 한꺼번에 넣을 수도 있다.
+- 체크박스는 강조(선택)와 **별개**다 — "시나리오 실행"(기존 버튼, 기존
+  의미 그대로: 지금 강조된 **하나**를 실행)과 새 **"선택 항목 실행"**
+  (체크된 **여러 개**를 실행)을 서로 다른 버튼으로 분리했다. 한 버튼에
+  두 의미를 억지로 합치지 않은 이유: 기존 테스트가 `runButton.isEnabled()`를
+  "지금 로드된 시나리오 하나가 유효한가"로 정확히 검증하고 있어서, 이
+  버튼의 활성화 조건을 "체크된 게 있는가"로 바꾸면 그 테스트(잘못된 JSON
+  재로드 시 `runButton`이 꺼져야 한다는 검증)가 깨진다.
+- **선택 항목 실행**은 `fmpy.gui.scenario_batch.BatchRunner`를 그대로
+  가져와 쓴다(복제하지 않음) — 체크된 파일들을 `run_many`로 돌리고, 각
+  행이 실시간으로 갱신되고, 끝나면 **"판정 / 결과"** 탭에 종합 요약
+  ("N개 중 합격 n · 불합격 n · ...")이 뜬다.
+- **"판정 / 결과"** 탭에 과거 "여러 시나리오 실행" 탭에 있던 **"분석
+  에이전트"** 영역(백엔드/모델 선택 + 분석 요청 + 결과 텍스트)을 그대로
+  옮겼다 — `fmpy.gui.scenario_batch.AnalysisRunner`를 가져와 쓴다. 이미
+  계산된 `summary`/`results`만 보여주고 **재실행하지 않는** 기존 원칙은
+  그대로.
+- **탭 구성이 5개에서 4개로 줄었다**: 시나리오 / 결과 그래프 / 판정 결과
+  (분석 에이전트 포함) / 에이전트에게 요청. **"여러 시나리오 실행"** 탭은
+  삭제했다(위젯·import 모두 제거, `self.batchTab` 속성 없음).
+- `src/fmpy/gui/scenario_batch.py` **파일 자체는 지우지 않았다** —
+  `BatchRunner`/`AnalysisRunner`는 재사용 중이고, 그 안의 독립형
+  `ScenarioBatchDialog` 클래스와 그 테스트들은 (GUI에 더는 탭으로 끼워
+  넣지 않지만) 여전히 올바른 코드이자 유효한 테스트라서 그대로 남겨뒀다.
+- `tests/test_scenario_batch_gui.py`: `batchTab`/`showBatchTab()`에
+  의존하던 통합 테스트 하나를 제거하고, 새 설계에 맞는 테스트 둘로
+  교체했다 — `ScenarioDialog` 자체의 목록에 파일 두 개를 넣고
+  `runCheckedFiles()`로 돌려 합격/불합격 종합을 확인하는 테스트, 그리고
+  툴바에 `batchAction`/`agentChatAction`이 없고 시나리오 창 탭이 4개임을
+  확인하는 테스트. `ScenarioBatchDialog`를 직접 쓰는 나머지 테스트는 전부
+  그대로 둬도 통과함을 확인했다(클래스가 안 바뀌었으므로).
+- `docs/scenario-runner-ko.md`/`docs/agent-integration-ko.md`: 창 구성
+  설명, "여러 시나리오 실행" 관련 서술을 전부 새 구조(왼쪽 목록 + 판정/결과
+  탭)로 고쳤다.
+
+검증: `pytest tests/test_scenario_gui.py tests/test_scenario_batch_gui.py
+tests/test_agent_chat.py tests/test_agent_settings.py -q` → **36 passed**.
+이어서 `tests/` 전체에서 `-k "scenario or agent"`(깨진 무관 모듈
+`test_examples.py`는 `dask` 미설치로 수집 단계에서 애초에 실패하므로
+`--ignore`) → **121 passed, 2 skipped**(기존과 동일하게 Ollama 서버
+없을 때 건너뛰는 것들). offscreen Qt로 `ScenarioDialog`를 직접 만들어
+`hasattr(d, "batchTab")`이 `False`, 탭 4개, 파일 두 개 추가 시 중복 제거와
+자동 로드·버튼 활성화가 기대대로 되는지 수동으로도 확인했다.
+
+미완료: **커밋/푸시는 하지 않았다** — 요청 시 진행(이 세션은 매번 명시적
+요청 전에는 커밋하지 않는 패턴을 유지 중).
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

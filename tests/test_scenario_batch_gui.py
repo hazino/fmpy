@@ -180,25 +180,44 @@ def test_cancel_stops_the_remaining_scenarios(app, reference_fmus_dist_dir, tmp_
     dialog.close()
 
 
-def test_embedded_as_a_tab_in_scenario_dialog_and_kept_in_sync_with_its_fmu(
-        app, reference_fmus_dist_dir):
+def test_scenario_dialog_runs_several_checked_files_itself(
+        app, reference_fmus_dist_dir, tmp_path):
+    """The old separate "여러 시나리오 실행" tab is gone; ScenarioDialog's own
+    left-hand file list now does the same job (checked rows -> run -> tally)."""
     path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
-    other = reference_fmus_dist_dir / "2.0" / "BouncingBall.fmu"
-    sd = ScenarioDialog(str(path))
-    assert sd.batchTab.fmuPath.text() == str(path)
-    sd.tabs.setCurrentWidget(sd.batchTab)
-    assert sd.tabs.currentWidget() is sd.batchTab
+    passing = write(tmp_path / "01_passing.json", good())
+    failing_scenario = good()
+    failing_scenario["checks"][0]["max"] = 1.0
+    failing = write(tmp_path / "02_failing.json", failing_scenario)
 
-    # Changing the FMU anywhere on the dialog updates the embedded tab too.
-    sd.fmuPath.setText(str(other))
-    assert sd.batchTab.fmuPath.text() == str(other)
-    sd.close()
+    dialog = ScenarioDialog(str(path))
+    assert not hasattr(dialog, "batchTab")  # no separate embedded tab any more
+    dialog.addScenarioPaths([passing, failing])
+    dialog.outputPath.setText(str(tmp_path / "out"))
+    dialog.runCheckedFiles()
+    deadline = time.monotonic() + 30
+    while dialog.batchWorker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert dialog.batchWorker.wait(2000)
+    app.processEvents()
 
+    assert dialog.summaryLabel.text() == (
+        "2개 중 합격 1 · 불합격 1 · 판정 기준 없음 0 · 실행 불가 0")
+    status = [dialog.fileTable.item(row, 1).text() for row in range(2)]
+    assert "합격" in status[0]
+    assert "불합격" in status[1]
+    assert dialog.saveReportButton.isEnabled()
+    dialog.close()
+
+
+def test_scenario_dialog_toolbar_has_no_separate_batch_or_chat_entries(
+        app, reference_fmus_dist_dir):
     window = MainWindow()
-    assert not hasattr(window, "batchAction")  # no separate toolbar entry any more
+    assert not hasattr(window, "batchAction")
+    assert not hasattr(window, "agentChatAction")
     dialog = window.ensureScenarioDialog()
-    dialog.showBatchTab()
-    assert dialog.tabs.currentWidget() is dialog.batchTab
+    assert dialog.tabs.count() == 4  # 시나리오 / 결과 그래프 / 판정 결과 / 에이전트에게 요청
     dialog.close()
     window.close()
 
