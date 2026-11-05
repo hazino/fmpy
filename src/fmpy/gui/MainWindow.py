@@ -281,14 +281,14 @@ class MainWindow(QMainWindow):
         self.ui.actionExit.triggered.connect(QApplication.closeAllWindows)
 
         # tools menu
-        # One entry point for everything scenario-related: loading/running a
-        # single JSON, the agent chat, and the multi-scenario batch runner are
-        # all tabs inside the one ScenarioDialog this opens (see ScenarioDialog
-        # in scenario.py). Agent settings live inside its "에이전트에게 요청"
-        # tab, behind that tab's own "설정..." button.
+        # One entry point for everything scenario-related: loading/running
+        # one or several JSON files (left-hand list) and the "시나리오 생성"
+        # chat agent are all inside the one ScenarioDialog this opens (see
+        # ScenarioDialog in scenario.py). Agent settings are reachable from
+        # either that tab's own "설정..." button or the "판정 / 결과" tab's.
         self.scenarioAction = self.ui.toolBar.addAction("Scenario...")
         self.scenarioAction.setToolTip(
-            "시나리오 로드·실행, 에이전트에게 요청, 여러 시나리오 실행을 모두 여기서 합니다.")
+            "시나리오 로드·실행(여러 개 가능)과 시나리오 생성 에이전트를 모두 여기서 합니다.")
         self.scenarioAction.triggered.connect(self.openScenario)
         self.scenarioDialog = None
         self.activeScenario = None

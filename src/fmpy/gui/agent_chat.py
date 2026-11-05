@@ -63,7 +63,7 @@ class AgentChatDialog(QWidget):
 
     def __init__(self, fmu=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("에이전트에게 시나리오 요청")
+        self.setWindowTitle("시나리오 생성")
         self.resize(1100, 720)
         self.worker = None
         self.turn = 0
@@ -76,11 +76,14 @@ class AgentChatDialog(QWidget):
         splitter = QSplitter()
         outer.addWidget(splitter, 1)
 
-        splitter.addWidget(self._buildChatSidebar())
+        # The chat column sits on the right (the FMU/backend controls and the
+        # result graph read left-to-right like the rest of the window; the
+        # conversation itself is the thing you glance at last).
         splitter.addWidget(self._buildMainArea(fmu))
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([340, 760])
+        splitter.addWidget(self._buildChatSidebar())
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([760, 340])
 
         self.appendSystem("모델은 시나리오 JSON만 만듭니다. 검증과 실제 FMU 실행은 항상 이 코드가 "
                           "직접 하고, 판정 기준이 없는 요청은 '판정 기준 없음'으로 표시됩니다.")
@@ -94,7 +97,7 @@ class AgentChatDialog(QWidget):
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        header = QLabel("<b>에이전트에게 요청</b>")
+        header = QLabel("<b>시나리오 생성</b>")
         layout.addWidget(header)
         rule = QFrame()
         rule.setFrameShape(QFrame.HLine)

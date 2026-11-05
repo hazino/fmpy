@@ -95,7 +95,7 @@ def test_saving_the_generated_scenario_writes_it_verbatim(app, tmp_path, monkeyp
 
 def test_the_panel_can_still_be_constructed_standalone(app):
     # Not how the GUI reaches it any more (that's the single "Scenario..."
-    # toolbar action -> ScenarioDialog's "에이전트에게 요청" tab), but the
+    # toolbar action -> ScenarioDialog's "시나리오 생성" tab), but the
     # class stays usable on its own for anything else that wants to embed it.
     window = MainWindow()
     dialog = AgentChatDialog(window.filename, window)

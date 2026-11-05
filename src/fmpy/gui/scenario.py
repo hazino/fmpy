@@ -104,11 +104,16 @@ class ScenarioDialog(QDialog):
         fmuRow.addWidget(QLabel("FMU"))
         fmuRow.addWidget(self.fmuPath, 1)
         fmuRow.addWidget(self.fmuButton)
+        self.toggleSidebarButton = QPushButton("목록 숨기기")
+        self.toggleSidebarButton.setToolTip("왼쪽 시나리오 목록을 숨기거나 다시 보여줍니다.")
+        self.toggleSidebarButton.clicked.connect(self.toggleSidebar)
+        fmuRow.addWidget(self.toggleSidebarButton)
         outer.addLayout(fmuRow)
 
         splitter = QSplitter()
         outer.addWidget(splitter, 1)
-        splitter.addWidget(self._buildFileListSidebar())
+        self.sidebar = self._buildFileListSidebar()
+        splitter.addWidget(self.sidebar)
         splitter.addWidget(self._buildMainArea())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -224,7 +229,7 @@ class ScenarioDialog(QDialog):
         self.tabs.addTab(self.plot, "결과 그래프")
         self.tabs.addTab(self._buildReportTab(), "판정 / 결과")
         self.agentChatTab = AgentChatDialog(self.fmuPath.text())
-        self.tabs.addTab(self.agentChatTab, "에이전트에게 요청")
+        self.tabs.addTab(self.agentChatTab, "시나리오 생성")
         layout.addWidget(self.tabs)
 
         self.onAnalysisBackendChanged(self.analysisBackendCombo.currentIndex())
@@ -260,11 +265,16 @@ class ScenarioDialog(QDialog):
         self.analysisRequestButton = QPushButton("분석 요청")
         self.analysisRequestButton.setEnabled(False)
         self.analysisRequestButton.clicked.connect(self.requestAnalysis)
+        self.analysisSettingsButton = QPushButton("설정...")
+        self.analysisSettingsButton.setToolTip(
+            "기본 백엔드·모델·API 키·결과 폴더를 설정합니다. '시나리오 생성' 탭과 같은 설정입니다.")
+        self.analysisSettingsButton.clicked.connect(self.openSettings)
         analysisRow.addWidget(QLabel("백엔드"))
         analysisRow.addWidget(self.analysisBackendCombo)
         analysisRow.addWidget(QLabel("모델"))
         analysisRow.addWidget(self.analysisModelCombo, 1)
         analysisRow.addWidget(self.analysisRequestButton)
+        analysisRow.addWidget(self.analysisSettingsButton)
         layout.addLayout(analysisRow)
         self.analysisText = QTextEdit()
         self.analysisText.setReadOnly(True)
@@ -288,6 +298,11 @@ class ScenarioDialog(QDialog):
 
     def showAgentChatTab(self):
         self.tabs.setCurrentWidget(self.agentChatTab)
+
+    def toggleSidebar(self):
+        hide = self.sidebar.isVisible()
+        self.sidebar.setVisible(not hide)
+        self.toggleSidebarButton.setText("목록 보이기" if hide else "목록 숨기기")
 
     def openProposals(self):
         if not self.fmuPath.text():
@@ -594,6 +609,19 @@ class ScenarioDialog(QDialog):
             self.status.setText(f"보고서 저장함: {path}")
 
     # -- analysis agent: describe an already-run batch in words --------------------
+
+    def openSettings(self):
+        """Opens the same agent settings dialog as the '시나리오 생성' tab's own
+        '설정...' button -- both tabs read/write the one saved settings file."""
+        dialog = agent_settings.AgentSettingsDialog(self)
+        dialog.saved.connect(self.applySettings)
+        dialog.exec()
+
+    def applySettings(self, values):
+        self.settings = values
+        self.analysisBackendCombo.setCurrentIndex(0 if values["backend"] == "ollama" else 1)
+        self.onAnalysisBackendChanged(self.analysisBackendCombo.currentIndex())
+        self.agentChatTab.applySettings(values)
 
     def onAnalysisBackendChanged(self, index):
         ollama = index == 0

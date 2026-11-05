@@ -1,6 +1,6 @@
 # 작업 로그 및 이어하기 안내
 
-마지막 기록: 2026-11-04 (Asia/Seoul)
+마지막 기록: 2026-11-05 (Asia/Seoul)
 
 ## 최신 변경: 에이전트 연동 구조와 FMU 구조 기반 시나리오 도출 (2026-11-04, Claude)
 
@@ -713,6 +713,64 @@ tests/test_agent_chat.py tests/test_agent_settings.py -q` → **36 passed**.
 
 미완료: **커밋/푸시는 하지 않았다** — 요청 시 진행(이 세션은 매번 명시적
 요청 전에는 커밋하지 않는 패턴을 유지 중).
+
+### 추가 변경: 탭 이름 구분, 채팅 사이드바 오른쪽 이동, 분석 설정 버튼, 목록 숨기기 (2026-11-05, 이어서)
+
+사용자가 새 다중 선택 UI를 쓰면서 네 가지를 지적/요청했다:
+
+1. "에이전ㅌ트에게 요청이란 부분이 구분이 안됨. 시나리오 생성이라고 바꾸고."
+   → 탭 이름을 혼동하기 쉬웠다는 지적. "에이전트에게 요청" 탭(생성
+   에이전트)을 **"시나리오 생성"**으로 바꿨다 — "판정 / 결과" 탭 안의
+   "분석 에이전트"와 이름이 겹쳐 보이는 문제를 없앴다. `scenario.py`의 탭
+   라벨뿐 아니라 `agent_chat.py`의 `AgentChatDialog` 창 제목과 사이드바
+   헤더 텍스트도 같이 바꿔서 어디서 봐도 같은 이름이 보이게 했다.
+2. "에이전츠 채팅 창은 오른쪽으로" → `AgentChatDialog`의 `QSplitter` 순서를
+   뒤집었다. 이제 **왼쪽이 FMU/백엔드/모델/결과 폴더 설정 + 결과 그래프**,
+   **오른쪽이 채팅 사이드바**(대화 내용 + 입력창)다. 두 영역을 만드는
+   `_buildMainArea`/`_buildChatSidebar` 메서드 자체는 손대지 않고
+   `splitter.addWidget()` 호출 순서와 `setStretchFactor`/`setSizes`만
+   바꿨다 — 두 메서드가 서로의 위젯을 참조하지 않아 순서 교체가 안전했다.
+3. "판정/결과 창에 에이전트 설정하는 부분이 없음. 현재 에이전트에게
+   요청하는창과 동일한건지?" → 확인 결과 **같은 설정 파일**
+   (`agent_settings.load()`/`QSettings` INI)을 **"시나리오 생성"** 탭과
+   공유하고 있었지만, "판정 / 결과" 탭 쪽에는 그걸 여는 버튼이 없었다.
+   `ScenarioDialog`에 `openSettings()`/`applySettings()`를 새로
+   추가하고(`AgentChatDialog`의 기존 패턴과 동일), 분석 에이전트 영역에
+   **"설정..."** 버튼을 달았다. `applySettings()`는 자기 쪽 콤보박스를
+   갱신하는 것과 동시에 `self.agentChatTab.applySettings(values)`도
+   불러서 — 어느 쪽 설정 버튼에서 저장하든 **두 탭 다 바로 반영**된다
+   (반대 방향, 즉 "시나리오 생성" 탭에서 저장했을 때 "판정 / 결과" 탭의
+   콤보박스가 그 순간 바로 갱신되는 것까지는 안 했다 — 다음에 그 탭을 쓸 때
+   `self.settings`를 다시 읽는 지점이 없어서, 필요하면 추가 요청).
+4. "왼쪽에 시나리오 탭 구성은 잘했는데 숨기기 가능하게해주고" → FMU 입력
+   칸 옆에 **"목록 숨기기"/"목록 보이기"** 토글 버튼을 추가했다. 왼쪽
+   사이드바(`self.sidebar`)는 `QSplitter`의 자식이라 원래도 핸들을 끝까지
+   끌면 접혔지만, 버튼으로 바로 접고 펼 수 있게 했다. 버튼은 스플리터
+   바깥(항상 보이는 FMU 행)에 둬서, 사이드바를 숨긴 뒤에도 다시 꺼내는
+   방법이 항상 보이게 했다.
+
+변경 파일: `src/fmpy/gui/scenario.py`(토글 버튼/메서드, 분석 설정 버튼 +
+`openSettings`/`applySettings`, 탭 라벨), `src/fmpy/gui/agent_chat.py`
+(스플리터 순서, 창 제목, 사이드바 헤더), `src/fmpy/gui/MainWindow.py`
+(툴바 툴팁·주석의 옛 탭 이름 갱신), `tests/test_agent_chat.py`(주석 하나의
+옛 탭 이름 갱신 — 동작 자체를 검증하는 코드는 아니었음),
+`docs/scenario-runner-ko.md`/`docs/agent-integration-ko.md`(탭 이름,
+좌우 배치, 설정 버튼 공유, 분석 요청이 "선택 항목 실행" 결과에만 작동한다는
+점 명시).
+
+검증: `pytest tests/test_scenario_gui.py tests/test_scenario_batch_gui.py
+tests/test_agent_chat.py tests/test_agent_settings.py -q` → **36 passed**
+(기존과 동일한 개수 — 레이아웃/이름 변경이라 테스트가 깨지지 않을 거라
+예상했고, 실제로도 안 깨졌다). offscreen Qt로 `ScenarioDialog`를 직접
+`show()`해서(숨김 토글의 `isVisible()` 판정이 `show()` 없이는 항상
+`False`로 나와 처음엔 헷갈렸다 — 최상위 창을 띄워야 자식의 가시성이
+의미 있게 나온다) 탭 라벨 4개, 목록 숨기기/보이기 토글의 실제 가시성
+전환, `analysisSettingsButton` 존재, `AgentChatDialog` 창 제목 변경을
+직접 확인했다.
+
+미완료: 커밋/푸시는 요청 시 진행. "시나리오 생성" 탭에서 설정을 바꿀 때
+"판정 / 결과" 탭의 콤보박스를 그 순간 바로 갱신하는 역방향 동기화는
+구현하지 않았다(필요하면 후속 요청).
 
 ### 이 세션의 실행 환경 (중요)
 
