@@ -572,6 +572,76 @@ tests/test_scenario_batch_gui.py tests/test_agent_settings.py -q` →
 검증: 전체 재실행 → **114 passed**(위젯 속성이 그대로라 테스트 변경 없이
 통과). `scripts/check_gui.py` + `windowFlags()`/탭 구성 실제 확인.
 
+### 추가 변경: 에이전트를 둘로 분리 — 실행·분석 에이전트 신규 구현 (같은 세션, 이어서)
+
+사용자 요청: "에이전트를 두개로 나누자 — 시나리오 생성 에이전트 / 시나리오
+실행 및 분석 에이전트. [후자는] 기존에 있던 시나리오를 바탕으로 자동으로
+실행하고 결과를 정리해주는 역할. 지금은 이 에이전트에 포커스를 맞춰서
+진행해주고. 폴더경로를 주면 이 에이전트가 폴더 목록에 있는 모든 시나리오를
+체크해서 돌려보고 결과를 판단할 수 있는 역할."
+
+**생성 에이전트**(`AgentChatDialog`, `generate_with_ollama`/`run_with_claude`)
+는 건드리지 않았다. **실행·분석 에이전트**를 새로 만들었다:
+
+- `src/fmpy/scenario_backends.py`:
+  - `_ollama_generate`에 `json_mode` 파라미터 추가(기본 True=기존 생성용,
+    False=분석용 — `format: "json"`을 안 강제해서 자연어 프로세 응답을 받음).
+  - `ANALYSIS_PROMPT_TEMPLATE`/`_analysis_prompt()`: `format_batch_report()`가
+    쓰는 것과 **똑같은 데이터**(요약 숫자 + 시나리오별 합격/불합격/비고)만
+    모델에게 보여주고 "표에 없는 내용을 지어내지 마라"고 명시. 샘플 표는
+    아예 전달 안 함.
+  - `analyze_results_with_ollama`/`analyze_results_with_claude`: **이미 계산된**
+    `summary`/`results`를 받아 모델에게 설명만 요청(재실행 없음). GUI의
+    "분석 요청" 버튼이 쓰는 핵심 함수 — 배치를 두 번 돌리지 않으려고 실행과
+    분석을 분리했다.
+  - `analyze_with_ollama`/`analyze_with_claude`: 폴더 경로를 받아 **(1)**
+    `run_many`로 전부 실행 **(2)** 위 함수로 분석, 둘을 합쳐 CLI가 쓰는
+    원샷 함수. 배치 자체가 실패하면(FMU 못 읽음 등) 분석을 시도하지 않고
+    그대로 반환. 모델이 응답 못 해도(`RuntimeError`) 실행 결과는 보존되고
+    `analysis: null` + `analysis_error`만 붙는다 — **실행 성공과 분석 성공을
+    분리**(기존 "실행 성공 ≠ 시험 합격" 원칙과 같은 결).
+- `examples/agent/analyze_scenarios.py` (신규): `--fmu`/`--folder`/
+  `--backend {ollama,claude}`/`--model`/`--output`. 종료 코드: 0 전부
+  정상, 1 불합격 있음, 2 실행 불가 있음 또는 폴더에 `.json` 없음.
+- `src/fmpy/gui/scenario_batch.py`("여러 시나리오 실행" 탭)에 **"분석
+  에이전트"** 영역 추가: 백엔드/모델 선택 + "분석 요청" 버튼(배치 실행
+  전엔 비활성) + 읽기 전용 결과 텍스트. `AnalysisRunner`(QThread)가
+  `analyze_results_with_*`를 호출 — **`run_many`를 다시 안 부른다.**
+  실제로 스파이를 꽂아 `scenario_agent.run`이 분석 요청 중 **0번** 호출되는
+  것을 테스트로 확인(재실행 안 함을 증명). `isBusy()`/`closeEvent()`가
+  배치 워커와 분석 워커 둘 다 확인하도록 확장.
+- **실제로 PID 데모 7개 폴더로 끝까지 돌려 확인**: 실행·집계는
+  `run_many`를 직접 부른 것과 **100% 동일**(`5/0/1/1`). 모델(`gemma:2b`)의
+  자연어 설명 자체는 **표를 잘못 읽었다** — "7개 모두 합격"이라고 주장하거나
+  합격한 시나리오를 판정 기준 없음으로 잘못 분류. 파이프라인은 정확하고
+  약한 모델의 표 읽기 신뢰도만 낮다는 걸 솔직하게 기록(생성 에이전트에서
+  본 것과 같은 종류의 한계). 모델 응답 없이 실행만 보존되는 것(불통 호스트,
+  취소)도 실제로 확인.
+- `tests/test_scenario_backends.py` (신규, 11개): 프롬프트 포맷팅(순수
+  함수, 네트워크 불필요), 빈 폴더 거부(두 백엔드 모두, Claude는 패키지
+  없이도 이 경로는 통과), `anthropic` 미설치 시 `ImportError` 전파(패키지가
+  실제로 없을 때만 돎), 모델 불통 시 실행 결과 보존 확인, 취소 시 거동,
+  **Ollama 실제 서버로** 분석 단독 호출/폴더 전체 파이프라인/PID 데모 정확한
+  집계(모델 응답 내용 자체는 신뢰 안 하고 집계 숫자만 단언 — 주석에 사유 명시).
+- `tests/test_scenario_batch_gui.py`에 3개 추가: 배치 실행 전 분석 버튼
+  비활성, 실제 배치 실행 후 분석이 **재실행 없이** 결과를 설명(스파이로
+  `scenario_agent.run` 호출 횟수 0 확인), 백엔드 전환 시 기본 모델명.
+  `isolated_agent_settings` 픽스처도 이 파일에 추가(이제
+  `ScenarioBatchDialog`도 `agent_settings`를 읽음).
+- `docs/agent-integration-ko.md`에 "두 개의 에이전트" 비교 표와 "분석
+  에이전트" 절 추가, `docs/scenario-runner-ko.md`에 사용법 한 단락 추가.
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_gui.py
+tests/test_scenario_agent.py tests/test_pid_demo.py tests/test_agent_chat.py
+tests/test_scenario_batch_gui.py tests/test_agent_settings.py
+tests/test_scenario_backends.py -q` → **128 passed**(기존 114 + 신규 14,
+Ollama 실제 호출이 많아 전체 실행에 약 2분 30초 소요). `scripts/check_gui.py`
++ 실제 GUI로 배치 실행→분석 요청까지 end-to-end 수동 확인.
+
+미완료: 이번에도 **커밋/푸시는 안 했다** — 요청 시 진행. CLI 스크립트
+(`analyze_scenarios.py`)는 Claude 백엔드를 실제 API로 검증하지 못함(이
+환경에 키/패키지 없음, 기존과 동일한 제약).
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

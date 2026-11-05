@@ -25,8 +25,9 @@ import json
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-from fmpy.scenario_agent import TOOLS, authoring_context, call, run, validate
+from fmpy.scenario_agent import TOOLS, authoring_context, call, run, run_many, validate
 
 OLLAMA_PROMPT_TEMPLATE = """You write test scenarios for an FMI 2.0 Co-Simulation FMU as a single JSON object.
 
@@ -62,6 +63,47 @@ on it; if it comes back with errors, fix exactly the listed problems (by
 report the result in one short sentence -- do not print the JSON yourself,
 the tool result already contains it."""
 
+ANALYSIS_PROMPT_TEMPLATE = """다음은 FMU "{fmu}"에 대해 시나리오 {total}개를 실행한 결과다.
+숫자는 모두 이미 계산되어 있으니 새로 계산하거나 추측하지 말고, 아래 표만 근거로
+한국어로 짧게 설명해라.
+
+{summary_line}
+
+| 시나리오 | 결과 | 비고 |
+|---|---|---|
+{rows}
+
+다음 세 가지를 설명해라:
+1. 전체적으로 어떤 상태인가
+2. 특히 주의가 필요한 시나리오가 있다면 어느 것이고 왜 그런가
+   (판정 기준이 없는 시나리오는 실패가 아니라 관찰용이라는 점에 주의)
+3. 다음에 무엇을 확인하면 좋은가
+
+표에 없는 내용을 지어내지 마라.
+"""
+
+_NO_NOTE = "(없음)"
+
+
+def _analysis_prompt(fmu, summary, results):
+    """The same data format_batch_report() renders, reused as the model's only input."""
+    rows = []
+    for entry in results:
+        if not entry.get("ok"):
+            verdict, note = "오류", entry["errors"][0]["message"]
+        else:
+            passed = entry.get("passed")
+            verdict = "합격" if passed is True else "불합격" if passed is False else "판정 기준 없음"
+            report_summary = (entry.get("report") or {}).get("summary") or {}
+            failed = report_summary.get("failed_checks") or []
+            note = f"실패한 검사: {', '.join(failed)}" if failed else _NO_NOTE
+        rows.append(f"| {entry['id']} | {verdict} | {note} |")
+    return ANALYSIS_PROMPT_TEMPLATE.format(
+        fmu=fmu, total=summary["total"], rows="\n".join(rows),
+        summary_line=f"{summary['total']}개 중 합격 {summary['passed']} · "
+                     f"불합격 {summary['failed']} · 판정 기준 없음 {summary['no_verdict']} · "
+                     f"실행 불가 {summary['error']}")
+
 _NO_OP = lambda message: None
 _NEVER = lambda: False
 
@@ -79,14 +121,17 @@ def ollama_models(host="http://localhost:11434", timeout=3):
         return []
 
 
-def _ollama_generate(host, model, prompt):
-    """One call to Ollama's completion endpoint, forcing JSON-shaped output."""
-    body = json.dumps({"model": model, "prompt": prompt, "format": "json",
-                       "stream": False, "options": {"temperature": 0.2}}).encode()
-    request = urllib.request.Request(f"{host}/api/generate", data=body,
+def _ollama_generate(host, model, prompt, json_mode=True, timeout=120):
+    """One call to Ollama's completion endpoint. JSON-shaped output by default
+    (scenario generation); plain prose when ``json_mode`` is False (analysis)."""
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "options": {"temperature": 0.2}}
+    if json_mode:
+        body["format"] = "json"
+    request = urllib.request.Request(f"{host}/api/generate", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())["response"]
     except urllib.error.URLError as error:
         raise RuntimeError(f"Could not reach Ollama at {host}: {error}") from error
@@ -230,3 +275,96 @@ def run_with_claude(fmu, request, model="claude-sonnet-5", max_turns=8, output=N
         return _fail("claude_loop", "no_valid_scenario",
                     "The model never completed a successful run.")
     return {**last_run_result, "generated_scenario": last_scenario}
+
+
+# ---------------------------------------------------------------------------
+# Execution-and-analysis agent: given a folder, run every scenario in it
+# (fmpy.scenario_agent.run_many -- deterministic, no model involved) and then
+# ask a model to summarize the already-computed results in words. The model
+# never runs anything and never sees a sample table; it only ever receives
+# the same pass/fail/no-verdict/error table format_batch_report() renders,
+# and is told not to invent numbers beyond it. This is a separate agent from
+# generate_with_ollama/run_with_claude above: that one turns words into a
+# scenario; this one turns a batch of already-run scenarios into words.
+# ---------------------------------------------------------------------------
+
+def _scenario_files(folder):
+    return sorted(Path(folder).glob("*.json"))
+
+
+def analyze_results_with_ollama(fmu, summary, results, host="http://localhost:11434",
+                                model="gemma:2b", on_log=None):
+    """Summarize an already-computed batch (e.g. from scenario_agent.run_many)
+    in words. Returns (text, None) or (None, error_message); never raises for
+    an unreachable server. Runs nothing -- ``summary``/``results`` are taken
+    as given, exactly as format_batch_report() would render them."""
+    log = on_log or _NO_OP
+    log(f"[asking {model} to summarize {summary['total']} result(s)...]")
+    try:
+        text = _ollama_generate(host, model, _analysis_prompt(fmu, summary, results),
+                                json_mode=False, timeout=180)
+    except RuntimeError as error:
+        log(str(error))
+        return None, str(error)
+    return text.strip(), None
+
+
+def analyze_results_with_claude(fmu, summary, results, model="claude-sonnet-5", on_log=None,
+                                api_key=None):
+    """Same as analyze_results_with_ollama, asking Claude instead. No tool
+    use: there is nothing left to run, only a table to read.
+
+    Raises ImportError if the ``anthropic`` package is not installed.
+    """
+    import anthropic  # imported lazily: callers should work without it installed
+
+    log = on_log or _NO_OP
+    log(f"[asking {model} to summarize {summary['total']} result(s)...]")
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    response = client.messages.create(
+        model=model, max_tokens=1024,
+        messages=[{"role": "user", "content": _analysis_prompt(fmu, summary, results)}])
+    text = "".join(block.text for block in response.content if block.type == "text")
+    return text.strip(), None
+
+
+def analyze_with_ollama(fmu, folder, host="http://localhost:11434", model="gemma:2b",
+                        output=None, include_samples=0, on_log=None, on_progress=None,
+                        cancelled=None):
+    """Run every scenario in ``folder`` against ``fmu``, then ask Ollama to
+    summarize the results in words. One envelope: the same shape as
+    ``scenario_agent.run_many`` plus an ``"analysis"`` string (or None if the
+    batch itself could not run, or the model could not be reached)."""
+    log = on_log or _NO_OP
+    paths = _scenario_files(folder)
+    if not paths:
+        return _fail("analyze", "no_scenarios_found", f"No .json files in {folder}")
+    log(f"Running {len(paths)} scenario(s) from {folder}...")
+    batch = run_many(fmu, paths, output=output, include_samples=include_samples,
+                     on_progress=on_progress, cancelled=cancelled)
+    if not batch["ok"] or (cancelled and cancelled()):
+        return {**batch, "analysis": None}
+    text, error = analyze_results_with_ollama(fmu, batch["summary"], batch["results"],
+                                               host, model, on_log=log)
+    return {**batch, "analysis": text, **({"analysis_error": error} if error else {})}
+
+
+def analyze_with_claude(fmu, folder, model="claude-sonnet-5", output=None, include_samples=0,
+                        on_log=None, on_progress=None, cancelled=None, api_key=None):
+    """Same as analyze_with_ollama, asking Claude instead. No tool-calling here
+    -- the batch already ran deterministically; the model only summarizes it.
+
+    Raises ImportError if the ``anthropic`` package is not installed.
+    """
+    paths = _scenario_files(folder)
+    if not paths:
+        return _fail("analyze", "no_scenarios_found", f"No .json files in {folder}")
+    log = on_log or _NO_OP
+    log(f"Running {len(paths)} scenario(s) from {folder}...")
+    batch = run_many(fmu, paths, output=output, include_samples=include_samples,
+                     on_progress=on_progress, cancelled=cancelled)
+    if not batch["ok"] or (cancelled and cancelled()):
+        return {**batch, "analysis": None}
+    text, error = analyze_results_with_claude(fmu, batch["summary"], batch["results"],
+                                              model, on_log=log, api_key=api_key)
+    return {**batch, "analysis": text, **({"analysis_error": error} if error else {})}

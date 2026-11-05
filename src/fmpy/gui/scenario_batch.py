@@ -1,13 +1,17 @@
-"""Run a user-picked collection of scenario files against one FMU and tally
-the pass/fail verdicts into one report.
+"""This is the execution-and-analysis agent: given scenarios that already
+exist -- a folder, or files picked by hand -- run every one of them against
+one FMU and tally the pass/fail verdicts into one report, then (optionally)
+hand that same report to a model and ask it to summarize it in words.
 
-Unlike ScenarioProposalsDialog (which runs what fmpy.scenario_agent.plan
-derives from the FMU's own declared structure, with no acceptance criteria),
-this runs scenarios the user already wrote or picked up elsewhere -- e.g. the
-seven hand-authored ones in examples/agent/pid_demo/scenarios/ -- and expects
-most of them to actually carry checks. The point is the aggregate: how many
-passed, how many failed, how many have no verdict, how many could not even
-run, in one place, rather than reading seven separate report.json files.
+Deliberately a second agent, not the same one as fmpy.gui.agent_chat (the
+generation agent, which turns a request in words into a new scenario). This
+one never writes a scenario; it only runs ones that already exist and, at
+most, describes what happened. Unlike ScenarioProposalsDialog (which runs
+what fmpy.scenario_agent.plan derives from the FMU's own declared structure,
+with no acceptance criteria), this runs scenarios the user already wrote or
+picked up elsewhere -- e.g. the seven hand-authored ones in
+examples/agent/pid_demo/scenarios/ -- and expects most of them to actually
+carry checks.
 
 A plain QWidget (despite the class's name), so ScenarioDialog can embed it as
 one of its own tabs instead of popping it up as a separate window.
@@ -16,11 +20,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                               QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
+                               QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from fmpy.scenario_agent import run_many
+from fmpy.scenario_backends import (analyze_results_with_claude, analyze_results_with_ollama,
+                                    ollama_models)
+from . import agent_settings
 
 COLUMNS = ("파일", "결과")
 
@@ -44,6 +51,30 @@ class BatchRunner(QThread):
         self.allFinished.emit(envelope)
 
 
+class AnalysisRunner(QThread):
+    """Asks a model to summarize an already-computed batch. Runs nothing new."""
+
+    logLine = Signal(str)
+    finishedWith = Signal(object, object)  # text-or-None, error-or-None
+
+    def __init__(self, backend, kwargs, parent=None):
+        super().__init__(parent)
+        self.backend = backend  # "ollama" or "claude"
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            if self.backend == "ollama":
+                text, error = analyze_results_with_ollama(on_log=self.logLine.emit, **self.kwargs)
+            else:
+                text, error = analyze_results_with_claude(on_log=self.logLine.emit, **self.kwargs)
+        except ImportError:
+            text, error = None, "pip install anthropic"
+        except Exception as exc:
+            text, error = None, str(exc)
+        self.finishedWith.emit(text, error)
+
+
 class ScenarioBatchDialog(QWidget):
     """Pick several scenario files, run the checked ones, read off one summary."""
 
@@ -52,10 +83,14 @@ class ScenarioBatchDialog(QWidget):
         self.setWindowTitle("여러 시나리오 실행")
         self.resize(1040, 680)
         self.worker = None
+        self.analysisWorker = None
         self.paths = []  # list[Path], one per table row, same order
         self.activeRows = []  # table row for each position in the current run's job list
         self.results = {}  # table row -> run_many result entry
         self.lastReport = ""
+        self.lastSummary = None  # the batch summary/results the "분석 요청" button reads
+        self.lastResults = None
+        self.settings = agent_settings.load()
 
         layout = QVBoxLayout(self)
 
@@ -130,6 +165,35 @@ class ScenarioBatchDialog(QWidget):
                        self.cancelButton, self.openResultsButton, self.saveReportButton):
             buttons.addWidget(button)
         layout.addLayout(buttons)
+
+        layout.addWidget(QLabel("<b>분석 에이전트</b> — 위 실행 결과를 모델에게 보여주고 "
+                                "설명을 요청합니다. 모델은 아무것도 다시 실행하지 않고, "
+                                "이미 계산된 표만 봅니다."))
+        analysisRow = QHBoxLayout()
+        self.analysisBackendCombo = QComboBox()
+        self.analysisBackendCombo.addItems(["Ollama (로컬)", "Claude (API)"])
+        self.analysisBackendCombo.setCurrentIndex(
+            0 if self.settings["backend"] == "ollama" else 1)
+        self.analysisBackendCombo.currentIndexChanged.connect(self.onAnalysisBackendChanged)
+        self.analysisModelCombo = QComboBox()
+        self.analysisModelCombo.setEditable(True)
+        self.analysisRequestButton = QPushButton("분석 요청")
+        self.analysisRequestButton.setEnabled(False)
+        self.analysisRequestButton.clicked.connect(self.requestAnalysis)
+        analysisRow.addWidget(QLabel("백엔드"))
+        analysisRow.addWidget(self.analysisBackendCombo)
+        analysisRow.addWidget(QLabel("모델"))
+        analysisRow.addWidget(self.analysisModelCombo, 1)
+        analysisRow.addWidget(self.analysisRequestButton)
+        layout.addLayout(analysisRow)
+        self.analysisText = QTextEdit()
+        self.analysisText.setReadOnly(True)
+        self.analysisText.setMaximumHeight(160)
+        self.analysisText.setPlaceholderText(
+            "먼저 위에서 시나리오를 실행하세요. 끝나면 여기서 결과 설명을 요청할 수 있습니다.")
+        layout.addWidget(self.analysisText)
+
+        self.onAnalysisBackendChanged(self.analysisBackendCombo.currentIndex())
 
     # -- building the list -----------------------------------------------------
 
@@ -240,10 +304,53 @@ class ScenarioBatchDialog(QWidget):
             return
         summary = envelope["summary"]
         self.lastReport = envelope["report"]
+        self.lastSummary, self.lastResults = summary, envelope["results"]
         self.summaryLabel.setText(
             f"{summary['total']}개 중 합격 {summary['passed']} · 불합격 {summary['failed']} · "
             f"판정 기준 없음 {summary['no_verdict']} · 실행 불가 {summary['error']}")
         self.saveReportButton.setEnabled(True)
+        self.analysisRequestButton.setEnabled(True)
+        self.analysisText.clear()
+
+    # -- analysis agent: describe the already-computed results in words --------
+
+    def onAnalysisBackendChanged(self, index):
+        ollama = index == 0
+        self.analysisModelCombo.clear()
+        if ollama:
+            models = ollama_models(self.settings["ollama_host"])
+            self.analysisModelCombo.addItems(models or [self.settings["ollama_model"]])
+        else:
+            self.analysisModelCombo.addItem(self.settings["claude_model"])
+
+    def requestAnalysis(self):
+        if self.analysisWorker is not None and self.analysisWorker.isRunning():
+            return
+        if self.lastSummary is None:
+            return
+        self.analysisText.setPlainText("분석 요청 중...")
+        self.analysisRequestButton.setEnabled(False)
+        if self.analysisBackendCombo.currentIndex() == 0:
+            backend = "ollama"
+            kwargs = dict(fmu=self.fmuPath.text(), summary=self.lastSummary,
+                         results=self.lastResults, host=self.settings["ollama_host"],
+                         model=self.analysisModelCombo.currentText())
+        else:
+            backend = "claude"
+            kwargs = dict(fmu=self.fmuPath.text(), summary=self.lastSummary,
+                         results=self.lastResults, model=self.analysisModelCombo.currentText(),
+                         api_key=self.settings["claude_api_key"] or None)
+        self.analysisWorker = AnalysisRunner(backend, kwargs, self)
+        self.analysisWorker.logLine.connect(lambda line: self.analysisText.setPlainText(line))
+        self.analysisWorker.finishedWith.connect(self.onAnalysisFinished)
+        self.analysisWorker.start()
+
+    def onAnalysisFinished(self, text, error):
+        self.analysisRequestButton.setEnabled(self.lastSummary is not None)
+        if text:
+            self.analysisText.setPlainText(text)
+        else:
+            self.analysisText.setPlainText(f"분석 요청 실패: {error}")
 
     def setBusy(self, busy):
         for widget in (self.runButton, self.selectAllButton, self.selectNoneButton,
@@ -306,11 +413,16 @@ class ScenarioBatchDialog(QWidget):
             self.summaryLabel.setText(f"보고서 저장함: {path}")
 
     def isBusy(self):
-        return self.worker is not None and self.worker.isRunning()
+        return ((self.worker is not None and self.worker.isRunning())
+                or (self.analysisWorker is not None and self.analysisWorker.isRunning()))
 
     def closeEvent(self, event):
-        if self.isBusy():
+        if self.worker is not None and self.worker.isRunning():
             self.cancelRun()
+            event.ignore()
+        elif self.analysisWorker is not None and self.analysisWorker.isRunning():
+            # One quick model call, no mid-flight cancellation; just wait it out
+            # rather than destroying the QThread out from under it.
             event.ignore()
         else:
             super().closeEvent(event)

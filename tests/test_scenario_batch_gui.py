@@ -7,17 +7,27 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QFileDialog
 
+from fmpy.gui import agent_settings
 from fmpy.gui.MainWindow import MainWindow
 from fmpy.gui.scenario import ScenarioDialog
 from fmpy.gui.scenario_batch import ScenarioBatchDialog
+from fmpy.scenario_backends import ollama_models
 
 
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
+
+
+@pytest.fixture(autouse=True)
+def isolated_agent_settings(tmp_path, monkeypatch):
+    """Never read or write the real user's saved agent settings from a test."""
+    ini_path = tmp_path / "agent_settings.ini"
+    monkeypatch.setattr(agent_settings, "_settings",
+                        lambda: QSettings(str(ini_path), QSettings.IniFormat))
 
 
 def write(path, scenario):
@@ -191,3 +201,61 @@ def test_embedded_as_a_tab_in_scenario_dialog_and_kept_in_sync_with_its_fmu(
     assert dialog.tabs.currentWidget() is dialog.batchTab
     dialog.close()
     window.close()
+
+
+def test_analysis_request_is_disabled_until_a_batch_has_run(app, reference_fmus_dist_dir):
+    path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    dialog = ScenarioBatchDialog(str(path))
+    assert not dialog.analysisRequestButton.isEnabled()
+    dialog.requestAnalysis()  # a no-op: nothing to analyze yet
+    assert dialog.analysisWorker is None
+    dialog.close()
+
+
+@pytest.mark.skipif(not ollama_models(), reason="no Ollama server with a pulled model reachable")
+def test_analysis_describes_an_already_run_batch_without_rerunning_it(
+        app, reference_fmus_dist_dir, tmp_path, monkeypatch):
+    path = reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu"
+    write(tmp_path / "a.json", good())
+    dialog = ScenarioBatchDialog(str(path))
+    dialog.addPaths([tmp_path / "a.json"])
+    dialog.outputPath.setText(str(tmp_path / "out"))
+    dialog.runSelected()
+    deadline = time.monotonic() + 30
+    while dialog.worker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert dialog.worker.wait(2000)
+    app.processEvents()
+    assert dialog.analysisRequestButton.isEnabled()
+
+    # The batch's own run() must not be called again by the analysis step.
+    from fmpy import scenario_agent
+    called = {"n": 0}
+    original = scenario_agent.run
+
+    def spy(*a, **k):
+        called["n"] += 1
+        return original(*a, **k)
+
+    monkeypatch.setattr(scenario_agent, "run", spy)
+
+    dialog.requestAnalysis()
+    deadline = time.monotonic() + 30
+    while dialog.analysisWorker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.05)
+    assert dialog.analysisWorker.wait(2000)
+    app.processEvents()
+
+    assert called["n"] == 0  # no FMU re-execution happened
+    text = dialog.analysisText.toPlainText()
+    assert text and "실패" not in text[:20]  # didn't immediately show an error
+    dialog.close()
+
+
+def test_switching_analysis_backend_to_claude_fills_the_default_model(app):
+    dialog = ScenarioBatchDialog()
+    dialog.analysisBackendCombo.setCurrentIndex(1)
+    assert dialog.analysisModelCombo.currentText() == "claude-sonnet-5"
+    dialog.close()
