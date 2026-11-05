@@ -813,6 +813,67 @@ offscreen Qt로 실제 FMU(Feedthrough) + 시나리오 2개를 "선택 항목 �
 
 미완료: 커밋/푸시는 요청 시 진행.
 
+### 추가 변경: 실행 중간에 중지가 안 되던 문제 수정 (2026-11-05, 이어서)
+
+사용자 보고: "중간에 중지가 잘 안되네." 실제로 버그였다.
+
+**원인**: `fmpy.scenario_agent.run()`이 `cancelled` 콜백을 받는 파라미터
+자체가 없어서, 내부에서 `run_scenario(fmu, scenario, debug_logging=...)`를
+부를 때 `cancelled`를 **아예 넘기지 않았다**. `run_scenario()`는 통신
+스텝마다(`for index in range(count + 1):` 루프 맨 앞) `cancelled()`를
+확인해서 중간에 멈추는 기능이 이미 있었고, 단일 **"시나리오 실행"**
+경로(`ScenarioWorker`가 `run_scenario(self.fmu, self.scenario,
+self.isInterruptionRequested)`를 직접 부름)만 그 콜백을 실제로 넘기고
+있어서 거기서만 제대로 작동했다. 반면:
+
+- **"선택 항목 실행"**(배치, `run_many`)은 각 시나리오 파일을 시작하기
+  **전에만** `cancelled()`를 확인하고, `run()`에는 넘기지 않았다 — 그래서
+  지금 돌고 있는 시나리오 하나는 아무리 길어도 끝까지 다 돈 다음에야
+  "중지"가 반영되고, 그제서야 나머지 파일들을 건너뛰었다.
+- **"시나리오 생성"** 채팅 탭(`run_with_ollama`/`run_with_claude`)도
+  생성→검증 재시도 루프 사이에서는 취소를 확인했지만, 모델이 만든
+  시나리오가 통과해서 **실제로 FMU를 실행하는 마지막 단계**에서는 취소가
+  전혀 먹히지 않았다(`run()`에 `cancelled`를 안 넘겼으므로).
+
+`run()`의 `ScenarioCancelled` 예외 처리 코드는 이미 있었다 — 그냥 그
+분기를 타게 만드는 파라미터 전달이 빠져 있던, 죽은 코드였다.
+
+**수정**: `src/fmpy/scenario_agent.py`의 `run()`에 `cancelled=None` 파라미터
+추가 → `run_scenario(fmu, scenario, cancelled=cancelled, ...)`로 전달.
+`run_many()`가 (이미 갖고 있던 자기 몫의) `cancelled`를 각 파일의 `run()`
+호출에도 같이 넘기도록 수정 — 이제 파일 사이뿐 아니라 **지금 돌고 있는
+파일 안에서도** 중지가 통한다. `src/fmpy/scenario_backends.py`:
+`run_with_ollama`가 마지막 `run()` 호출에 `cancelled`를 넘기도록, 그리고
+`run_with_claude`의 도구 호출 루프가 모델이 `run`/`batch` 도구를 부를 때
+`cancelled=is_cancelled`를 끼워 넣도록 수정(로그 출력에는 호출 불가능한
+객체라서 빼고 찍음). `fmpy.gui.scenario_batch.BatchRunner`/
+`fmpy.gui.agent_chat.AgentChatWorker`는 이미 `self.isInterruptionRequested`를
+한 단계 위(`run_many`/`run_with_*`)에 넘기고 있었으므로 GUI 쪽은 변경 없음
+— 라이브러리 레이어만 고치면 끝까지 이어졌다.
+
+**테스트**: `tests/test_scenario_agent.py`의 기존
+`test_run_many_cancellation_stops_before_touching_the_remaining_files`가
+이 수정으로 **실패했다** — 그 테스트는 `cancelled()`가 파일 사이에서만
+불린다고 가정하고 **모든 호출을 세는** 목(mock)을 썼는데, 이제 첫 번째
+시나리오 **안에서도** 스텝마다 불리다 보니 두 번째 파일이 시작되기 전에
+이미 첫 번째 파일 도중에 조건이 트리거돼서 둘 다 "취소"로 끝나버렸다
+(이 테스트가 그동안 실제로는 간접적으로 **버그에 의존**하고 있었던 셈).
+`on_progress` 콜백으로 "시나리오 하나가 끝난 횟수"를 세는 방식으로
+고쳐서 다시 파일 사이 취소만 검증하게 했고, **새 테스트**
+`test_run_many_cancellation_stops_a_scenario_already_in_progress`를
+추가해 "스텝 3번째에서 취소하면 그 시나리오 자체가 중간에 멈춘다"를
+직접 검증했다(둘 다 `errors[0]["code"] == "cancelled"`).
+
+검증: `pytest tests/test_scenario.py tests/test_scenario_agent.py
+tests/test_scenario_backends.py tests/test_scenario_gui.py
+tests/test_scenario_batch_gui.py tests/test_agent_chat.py
+tests/test_agent_settings.py -q` → **119 passed**. 실제 체감 효과를
+offscreen GUI로 직접 측정: 100초/step 0.0001초짜리(최대 스텝 수에 가까운,
+~1,000,000 스텝) 시나리오를 "선택 항목 실행"으로 돌리다가 0.3초 후 "중지"를
+누르면 **0.31초 안에 멈췄다** — 같은 시나리오를 끝까지 돌리면 **3.98초**
+걸리는 것과 대조. 고치기 전이었다면 중지 요청 후에도 이 3.98초를 거의 다
+기다려야 멈췄을 것이다.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

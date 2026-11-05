@@ -387,16 +387,41 @@ def test_run_many_cancellation_stops_before_touching_the_remaining_files(feedthr
     write_scenario(scenario_dir / "a.json", good())
     write_scenario(scenario_dir / "b.json", good())
     paths = sorted(scenario_dir.glob("*.json"))
+    finished = {"n": 0}
+
+    def on_progress(index, entry):
+        finished["n"] += 1
+
+    def cancelled():
+        # cancelled() is now also checked once per communication step inside
+        # the first scenario's own run (see the next test), so counting
+        # *every* call would trip this well before "a" finishes. Only ask
+        # for the cutoff once a whole scenario has actually completed.
+        return finished["n"] >= 1
+
+    envelope = run_many(feedthrough, paths, on_progress=on_progress, cancelled=cancelled)
+    assert envelope["summary"] == {"total": 2, "passed": 1, "failed": 0, "no_verdict": 0,
+                                   "error": 1}
+    assert envelope["results"][1]["errors"][0]["code"] == "cancelled"
+
+
+def test_run_many_cancellation_stops_a_scenario_already_in_progress(feedthrough, tmp_path):
+    """cancelled() is forwarded into run_scenario() itself (via run()), checked
+    once per communication step, so a long-running scenario can be cut off
+    partway -- not just skipped outright before it starts."""
+    scenario = good()
+    scenario["stop_time"] = 1000.0  # many steps at this step_size; not instant
+    path = write_scenario(tmp_path / "long.json", scenario)
     calls = {"n": 0}
 
     def cancelled():
         calls["n"] += 1
-        return calls["n"] > 1  # let the first through, cancel before the second
+        return calls["n"] > 3  # a few steps in, well before stop_time
 
-    envelope = run_many(feedthrough, paths, cancelled=cancelled)
-    assert envelope["summary"] == {"total": 2, "passed": 1, "failed": 0, "no_verdict": 0,
+    envelope = run_many(feedthrough, [path], cancelled=cancelled)
+    assert envelope["summary"] == {"total": 1, "passed": 0, "failed": 0, "no_verdict": 0,
                                    "error": 1}
-    assert envelope["results"][1]["errors"][0]["code"] == "cancelled"
+    assert envelope["results"][0]["errors"][0]["code"] == "cancelled"
 
 
 def test_run_many_refuses_an_unreadable_fmu_up_front(tmp_path):

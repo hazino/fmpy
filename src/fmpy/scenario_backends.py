@@ -205,7 +205,7 @@ def run_with_ollama(fmu, request, host="http://localhost:11434", model="gemma:2b
     if scenario is None:
         return _fail("ollama_loop", "no_valid_scenario",
                     "The model never produced a scenario that validated.")
-    result = run(fmu, scenario, output=output, include_samples=include_samples)
+    result = run(fmu, scenario, output=output, include_samples=include_samples, cancelled=cancelled)
     return {**result, "generated_scenario": scenario}
 
 
@@ -254,12 +254,14 @@ def run_with_claude(fmu, request, model="claude-sonnet-5", max_turns=8, output=N
         results = []
         for block in tool_calls:
             arguments = dict(block.input)
+            if block.name in ("run", "batch"):
+                arguments["cancelled"] = is_cancelled
             if block.name == "run":
                 if output is not None:
                     arguments.setdefault("output", output)
                 if include_samples:
                     arguments.setdefault("include_samples", include_samples)
-            log(f"  -> {block.name}({json.dumps(arguments)})")
+            log(f"  -> {block.name}({json.dumps({k: v for k, v in arguments.items() if k != 'cancelled'})})")
             tool_result = call(block.name, fmu=fmu, **{k: v for k, v in arguments.items()
                                                        if k != "fmu"})
             if block.name == "run" and tool_result.get("ok"):

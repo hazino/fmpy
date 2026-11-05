@@ -225,19 +225,21 @@ def validate(fmu, scenario, tool="validate"):
                has_checks=bool(scenario.get("checks")), max_steps=MAX_STEPS)
 
 
-def run(fmu, scenario, output=None, include_samples=0, debug_logging=False):
+def run(fmu, scenario, output=None, include_samples=0, debug_logging=False, cancelled=None):
     """Validate and execute a scenario. Return the report without the sample table.
 
     ``output`` writes results.csv, report.json and scenario.json into that
     directory. ``include_samples`` inlines at most that many recorded rows, for
-    a caller that wants to look at a short trace directly.
+    a caller that wants to look at a short trace directly. ``cancelled``,
+    checked once per communication step, lets a caller stop a run already in
+    progress -- not just between calls to ``run``/``run_many``.
     """
     tool = "run"
     checked = validate(fmu, scenario, tool=tool)
     if not checked["ok"]:
         return checked
     try:
-        result = run_scenario(fmu, scenario, debug_logging=debug_logging)
+        result = run_scenario(fmu, scenario, cancelled=cancelled, debug_logging=debug_logging)
     except ScenarioCancelled as error:
         return _fail(tool, "cancelled", str(error))
     except FMICallException as error:
@@ -321,7 +323,7 @@ def run_many(fmu, scenario_paths, output=None, include_samples=0, debug_logging=
         entry["id"] = scenario.get("name") or path.stem
         scenario_output = str(Path(output) / path.stem) if output is not None else None
         outcome = run(fmu, scenario, output=scenario_output, include_samples=include_samples,
-                     debug_logging=debug_logging)
+                     debug_logging=debug_logging, cancelled=cancelled)
         entry.update(outcome)
         results.append(entry)
         if on_progress is not None:
