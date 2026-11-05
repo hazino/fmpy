@@ -4,14 +4,14 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, QUrl
+from PySide6.QtCore import QThread, Signal, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+                               QPushButton, QTabWidget, QTextEdit, QVBoxLayout,
+                               QSplitter, QTreeWidget, QTreeWidgetItem, QHeaderView)
 
 from fmpy import read_model_description
 from fmpy.scenario import run_scenario, validate_scenario, write_results
-from .scenario_proposals import ScenarioProposalsDialog
 from .scenario_results import ScenarioResults
 
 
@@ -47,6 +47,8 @@ class ScenarioDialog(QDialog):
         self.worker = None
         self.result = None
         self.resultDirectory = None
+        self.entries = {}
+        self.currentEntry = None
         layout = QVBoxLayout(self)
         self.fmuPath = QLineEdit(str(fmu or ""))
         self.fmuPath.setReadOnly(True)
@@ -67,15 +69,14 @@ class ScenarioDialog(QDialog):
             row.addWidget(edit, 1)
             row.addWidget(button)
             layout.addLayout(row)
-        proposalsRow = QHBoxLayout()
-        proposalsRow.addStretch(1)
-        self.proposalsButton = QPushButton("시나리오 제안 보기...")
-        self.proposalsButton.setToolTip(
-            "선택한 FMU가 선언한 구조에서 시나리오 후보를 뽑아 보여줍니다. JSON 로드는 필요 없습니다.")
-        self.proposalsButton.clicked.connect(self.openProposals)
-        proposalsRow.addWidget(self.proposalsButton)
-        layout.addLayout(proposalsRow)
-        layout.addWidget(QLabel("JSON 로드 시 메인 재생에 적용됩니다. 창을 닫아도 유지되며, 실행 조건은 JSON을 따릅니다."))
+        layout.addWidget(QLabel("여러 JSON을 로드하고 트리에서 선택하세요. 선택한 시나리오가 메인 재생에 적용됩니다."))
+        self.scenarioTree = QTreeWidget()
+        self.scenarioTree.setHeaderLabels(["시나리오", "상태"])
+        self.scenarioTree.header().setStretchLastSection(False)
+        self.scenarioTree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.scenarioTree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.scenarioTree.setMinimumWidth(260)
+        self.scenarioTree.currentItemChanged.connect(self.selectScenario)
         self.tabs = QTabWidget()
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
@@ -85,7 +86,12 @@ class ScenarioDialog(QDialog):
         self.report = QTextEdit()
         self.report.setReadOnly(True)
         self.tabs.addTab(self.report, "판정 / 결과")
-        layout.addWidget(self.tabs, 1)
+        splitter = QSplitter()
+        splitter.addWidget(self.scenarioTree)
+        splitter.addWidget(self.tabs)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([300, 680])
+        layout.addWidget(splitter, 1)
         self.status = QLabel("FMU와 JSON 시나리오를 선택하세요.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -111,34 +117,89 @@ class ScenarioDialog(QDialog):
         if path:
             self.scenarioCleared.emit()
             self.fmuPath.setText(path)
+            for entry in self.entries.values():
+                entry["result"] = entry["directory"] = None
+                entry["item"].setText(1, "미검증")
+            self.showStoredResult()
             self.applyToMain()
 
-    def openProposals(self):
-        if not self.fmuPath.text():
-            self.status.setText("먼저 FMU를 선택하세요.")
-            return
-        ScenarioProposalsDialog(self.fmuPath.text(), self).exec()
-
     def chooseScenario(self):
-        path, _ = QFileDialog.getOpenFileName(self, "시나리오 로드", self.scenarioPath.text(), "JSON (*.json)")
-        if path:
+        paths, _ = QFileDialog.getOpenFileNames(self, "시나리오 로드 (여러 파일 선택 가능)",
+                                               self.scenarioPath.text(), "JSON (*.json)")
+        for path in paths:
             self.loadScenario(path)
 
     def loadScenario(self, path):
+        if self.worker is not None and self.worker.isRunning():
+            return False
+        path = str(Path(path).resolve())
+        entry = self.entries.get(path)
+        if entry is None:
+            parent_path = str(Path(path).parent)
+            group = next((self.scenarioTree.topLevelItem(i)
+                          for i in range(self.scenarioTree.topLevelItemCount())
+                          if self.scenarioTree.topLevelItem(i).toolTip(0) == parent_path), None)
+            if group is None:
+                group = QTreeWidgetItem(self.scenarioTree, [Path(parent_path).name])
+                group.setToolTip(0, parent_path)
+                group.setFlags(group.flags() & ~Qt.ItemIsSelectable)
+            item = QTreeWidgetItem(group, [Path(path).name])
+            item.setData(0, Qt.UserRole, path)
+            item.setToolTip(0, path)
+            group.setExpanded(True)
+            entry = {"item": item}
+            self.entries[path] = entry
+        entry.update(scenario=None, error=None, result=None, directory=None)
+        try:
+            entry["scenario"] = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        except Exception as error:
+            entry["error"] = str(error)
+        self.scenarioTree.blockSignals(True)
+        self.scenarioTree.setCurrentItem(entry["item"])
+        self.scenarioTree.blockSignals(False)
+        return self.selectScenario(entry["item"])
+
+    def selectScenario(self, item, previous=None):
+        if item is None or (self.worker is not None and self.worker.isRunning()):
+            return False
+        path = item.data(0, Qt.UserRole)
+        if path not in self.entries:
+            return False
         self.scenarioCleared.emit()
-        self.scenario = None
-        self.scenarioPath.setText(str(path))
+        self.currentEntry = self.entries[path]
+        self.scenario = self.currentEntry["scenario"]
+        self.scenarioPath.setText(path)
         self.preview.clear()
         self.runButton.setEnabled(False)
         self.applyButton.setEnabled(False)
-        try:
-            self.scenario = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-            self.preview.setPlainText(json.dumps(self.scenario, ensure_ascii=False, indent=2))
-            self.tabs.setCurrentWidget(self.preview)
-            return self.applyToMain()
-        except Exception as error:
-            self.status.setText(f"로드 실패: {error}")
+        self.showStoredResult()
+        self.tabs.setCurrentWidget(self.preview)
+        if self.currentEntry["error"]:
+            self.status.setText(f"로드 실패: {self.currentEntry['error']}")
+            item.setText(1, "로드 실패")
             return False
+        self.preview.setPlainText(json.dumps(self.scenario, ensure_ascii=False, indent=2))
+        valid = self.applyToMain()
+        if self.result is not None and valid:
+            verdict = self.result["passed"]
+            item.setText(1, "합격" if verdict is True else "실패" if verdict is False else "판정 기준 없음")
+        else:
+            item.setText(1, "검증 완료" if valid else "검증 실패")
+        return valid
+
+    def showStoredResult(self):
+        entry = self.currentEntry or {}
+        if entry.get("resultFmu") != self.fmuPath.text():
+            entry["result"] = entry["directory"] = None
+        self.result, self.resultDirectory = entry.get("result"), entry.get("directory")
+        self.plot.clear()
+        self.report.clear()
+        self.openResultsButton.setEnabled(self.resultDirectory is not None)
+        if self.result is not None:
+            self.plot.setResult(self.result["samples"], self.scenario["outputs"])
+            report = {k: v for k, v in self.result.items() if k != "samples"}
+            self.report.setPlainText(json.dumps(report, ensure_ascii=False, indent=2)
+                                     + "\n\n" + self.resultDirectory)
 
     def validate(self):
         self.runButton.setEnabled(False)
@@ -178,6 +239,9 @@ class ScenarioDialog(QDialog):
             return
         directory = Path(self.outputPath.text()) / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         self.result = self.resultDirectory = None
+        if self.currentEntry is not None:
+            self.currentEntry.update(result=None, directory=None)
+            self.currentEntry["item"].setText(1, "실행 중")
         self.plot.clear()
         self.report.clear()
         self.openResultsButton.setEnabled(False)
@@ -185,16 +249,22 @@ class ScenarioDialog(QDialog):
         self.status.setText("실행 중...")
         self.worker = ScenarioWorker(self.fmuPath.text(), self.scenario, directory, self)
         self.worker.completed.connect(self.completed)
-        self.worker.failed.connect(lambda message: self.status.setText(f"실행 실패/중지: {message}"))
+        self.worker.failed.connect(self.failed)
         self.worker.finished.connect(lambda: self.setBusy(False))
         self.worker.start()
 
     def setBusy(self, busy):
-        for widget in (self.fmuButton, self.loadButton, self.outputButton, self.outputPath):
+        for widget in (self.fmuButton, self.loadButton, self.outputButton, self.outputPath,
+                       self.scenarioTree):
             widget.setEnabled(not busy)
         self.runButton.setEnabled(not busy and self.scenario is not None)
         self.applyButton.setEnabled(not busy and self.scenario is not None)
         self.cancelButton.setEnabled(busy)
+
+    def failed(self, message):
+        self.status.setText(f"실행 실패/중지: {message}")
+        if self.currentEntry is not None:
+            self.currentEntry["item"].setText(1, "실패 / 중지")
 
     def cancelRun(self):
         if self.worker is not None and self.worker.isRunning():
@@ -208,6 +278,9 @@ class ScenarioDialog(QDialog):
         report = {k: v for k, v in result.items() if k != "samples"}
         self.report.setPlainText(json.dumps(report, ensure_ascii=False, indent=2) + "\n\n" + directory)
         verdict = "합격" if result["passed"] is True else "실패" if result["passed"] is False else "판정 기준 없음"
+        if self.currentEntry is not None:
+            self.currentEntry.update(result=result, directory=directory, resultFmu=self.fmuPath.text())
+            self.currentEntry["item"].setText(1, verdict)
         summary = result["summary"]
         # The FMU's own messages are the only account of why it refused a call.
         noise = "".join(f" / FMU {label} {count}건" for label, count in
