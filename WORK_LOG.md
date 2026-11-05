@@ -772,6 +772,47 @@ tests/test_agent_chat.py tests/test_agent_settings.py -q` → **36 passed**
 "판정 / 결과" 탭의 콤보박스를 그 순간 바로 갱신하는 역방향 동기화는
 구현하지 않았다(필요하면 후속 요청).
 
+### 추가 변경: "선택 항목 실행" 결과도 행별로 그래프 확인 가능하게 (2026-11-05, 이어서)
+
+사용자 지적: "결과그래프는 선택항목 실행 후에도 확인 가능해야하는데." 확인해
+보니 맞았다 — `scenario_batch.BatchRunner`가 부르는 `run_many()`는
+`include_samples` 인자가 기본값 0이라, 배치로 돌린 각 시나리오의 샘플 표가
+전혀 보존되지 않았다(요약/판정만 남음). 그래서 목록에서 배치로 실행한 행을
+다시 클릭해도 "판정 / 결과" 탭의 텍스트만 나오고 "결과 그래프" 탭은 비어
+있었다 — "시나리오 실행"(단일)으로 돌린 것만 그래프가 그려졌다.
+
+- `src/fmpy/gui/scenario_batch.py`: `fmpy.scenario.MAX_STEPS`를 가져와
+  `ALL_SAMPLES = MAX_STEPS + 1` 상수 추가(`agent_chat.ALL_SAMPLES`와 같은
+  수법). `BatchRunner.run()`이 `run_many(..., include_samples=ALL_SAMPLES)`
+  로 호출하도록 변경 — 이제 각 시나리오의 전체 샘플 표가 `on_progress`로
+  넘어오는 `entry["samples"]`에 들어온다(`run_many`가 최종적으로 반환하는
+  `envelope["results"]`는 여전히 `light_results`라서 샘플을 안 담지만,
+  `on_progress` 콜백에 넘기는 건 필터링 전의 전체 `entry`라서 원래부터
+  가능했다 — 인자만 안 넘기고 있었을 뿐).
+- `src/fmpy/gui/scenario.py`: `showEntryResult(entry)`가 `entry.get("samples")`
+  가 있으면 `self.plot.setResult(samples, outputs)`로 그래프를 그리도록
+  추가(`outputs`는 `entry["report"]["summary"]["outputs"]`의 키 목록 —
+  시나리오 파일을 다시 읽지 않고 이미 계산된 report에서 뽑음). 샘플이 없는
+  행(오류 항목 등)을 보여줄 때나 아직 실행하지 않은 행으로 돌아갈 때는
+  `self.plot.clear()`로 이전 행의 그래프가 남아 있지 않게 했다
+  (`onFileSelectionChanged`에서 `self.results.get(row)`가 `None`인 경우도
+  같이 처리). 배치 실행 **중** 현재 강조된 행이 막 끝나면
+  (`onBatchProgress`가 이미 `showEntryResult`를 부르던 경로) 그래프도 같이
+  갱신된다 — 즉 돌리는 동안 그 행을 보고 있으면 끝나자마자 그래프가 뜬다.
+- `docs/scenario-runner-ko.md`/`docs/agent-integration-ko.md`: 배치로 돌린
+  행도 그래프가 뜬다는 점, CLI `batch` 서브커맨드는 `--samples` 기본값이
+  0이라 GUI와 다르다는 점을 추가했다.
+
+검증: `pytest tests/test_scenario_gui.py tests/test_scenario_batch_gui.py
+tests/test_agent_chat.py tests/test_agent_settings.py -q` → **36 passed**
+(기존 `ScenarioBatchDialog` 테스트들은 `self.plot`이 없는 독립형 다이얼로그를
+대상으로 해서, entry에 `samples` 키가 추가로 생겨도 영향 없음을 확인).
+offscreen Qt로 실제 FMU(Feedthrough) + 시나리오 2개를 "선택 항목 실행"으로
+돌리고, 두 행을 번갈아 클릭하며 각각 그래프에 데이터가 그려지는 것을
+직접 확인(`len(d.plot.graphs[0].plot.listDataItems())`가 둘 다 1).
+
+미완료: 커밋/푸시는 요청 시 진행.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

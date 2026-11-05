@@ -180,7 +180,11 @@ GUI에서는 `ScenarioDialog`(시나리오 창) 자체의 왼쪽 **시나리오 
 개 한 번에 선택하거나 **폴더에서 추가...**로 폴더 전체를 넣으면 목록에
 쌓이고, 체크박스로 원하는 파일만 골라 **선택 항목 실행**을 누르면 됩니다.
 실행 중 각 행이 실시간으로 갱신되고, 끝나면 같은 요약이 **판정 / 결과**
-탭에 뜨고 Markdown 보고서를 저장할 수 있습니다. `ScenarioProposalsDialog`
+탭에 뜨고 Markdown 보고서를 저장할 수 있습니다. GUI의 `BatchRunner`는
+`run_many`에 `include_samples`를 가득 채워 넘기므로(`scenario_batch.ALL_SAMPLES`),
+목록에서 행을 다시 클릭하면 **결과 그래프** 탭에도 그 시나리오의 전체
+샘플이 그려집니다 — CLI의 `batch` 서브커맨드는 기본값 `--samples 0`이라
+다릅니다(필요하면 직접 지정). `ScenarioProposalsDialog`
 (제안 보기, 지금도 별도 팝업)와 다른 점: 제안 보기는 `plan()`이 XML만 보고
 만든 것(판정 기준 없음)을 보여주고, 이 목록은 **사용자가 이미 작성한, 보통
 판정 기준이 있는** 시나리오 묶음을 돌립니다. (`fmpy.gui.scenario_batch`

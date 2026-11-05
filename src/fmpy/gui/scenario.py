@@ -390,6 +390,8 @@ class ScenarioDialog(QDialog):
         entry = self.results.get(row)
         if entry is not None:
             self.showEntryResult(entry)
+        else:
+            self.plot.clear()
 
     # -- the single "currently loaded" scenario: unchanged from before ------------
 
@@ -520,8 +522,9 @@ class ScenarioDialog(QDialog):
 
     def showEntryResult(self, entry):
         """A batch-run row's own report, shown when it is highlighted again.
-        Batch runs do not keep the sample table (run_many's default), so
-        there is nothing to re-plot here -- only the judgment text."""
+        BatchRunner asks run_many for the full sample table (see ALL_SAMPLES
+        in scenario_batch.py), so the graph tab can show this row's trace
+        exactly as a single "시나리오 실행" would."""
         if entry.get("ok"):
             report_summary = (entry.get("report") or {}).get("summary") or {}
             text = (f"ID: {entry.get('id', '')}\n"
@@ -533,8 +536,14 @@ class ScenarioDialog(QDialog):
             directory = (entry.get("artifacts") or {}).get("directory")
             if directory:
                 text += f"\n저장 위치: {directory}"
+            samples = entry.get("samples")
+            if samples:
+                self.plot.setResult(samples, list(report_summary.get("outputs", {}).keys()))
+            else:
+                self.plot.clear()
         else:
             text = "오류: " + "; ".join(e["message"] for e in entry.get("errors", []))
+            self.plot.clear()
         self.report.setPlainText(text)
 
     # -- running several checked files at once (new) ---------------------------

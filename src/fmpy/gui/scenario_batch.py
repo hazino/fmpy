@@ -24,12 +24,18 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxL
                                QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
                                QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
+from fmpy.scenario import MAX_STEPS
 from fmpy.scenario_agent import run_many
 from fmpy.scenario_backends import (analyze_results_with_claude, analyze_results_with_ollama,
                                     ollama_models)
 from . import agent_settings
 
 COLUMNS = ("파일", "결과")
+
+#: Passed to run_many so every scenario's full sample table comes back (for
+#: plotting a row later), not just the summary -- same reasoning as
+#: agent_chat.ALL_SAMPLES.
+ALL_SAMPLES = MAX_STEPS + 1
 
 
 class BatchRunner(QThread):
@@ -45,7 +51,7 @@ class BatchRunner(QThread):
         self.output = output
 
     def run(self):
-        envelope = run_many(self.fmu, self.paths, output=self.output,
+        envelope = run_many(self.fmu, self.paths, output=self.output, include_samples=ALL_SAMPLES,
                             on_progress=lambda index, entry: self.progress.emit(index, entry),
                             cancelled=self.isInterruptionRequested)
         self.allFinished.emit(envelope)
