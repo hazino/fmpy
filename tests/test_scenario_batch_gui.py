@@ -185,5 +185,9 @@ def test_embedded_as_a_tab_in_scenario_dialog_and_kept_in_sync_with_its_fmu(
     sd.close()
 
     window = MainWindow()
-    assert hasattr(window, "batchAction") and window.batchAction.text()
+    assert not hasattr(window, "batchAction")  # no separate toolbar entry any more
+    dialog = window.ensureScenarioDialog()
+    dialog.showBatchTab()
+    assert dialog.tabs.currentWidget() is dialog.batchTab
+    dialog.close()
     window.close()

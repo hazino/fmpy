@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, QUrl
+from PySide6.QtCore import Qt, QThread, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
@@ -44,6 +44,11 @@ class ScenarioDialog(QDialog):
     def __init__(self, fmu=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("FMI 2.0 Scenario / 시나리오 실행")
+        # A QDialog has no maximize button by default; this window holds five
+        # tabs (including a chat sidebar and a batch table), so let it fill
+        # the screen like any other main window when the user wants that.
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint
+                            | Qt.WindowMinimizeButtonHint)
         self.resize(980, 700)
         self.scenario = None
         self.worker = None

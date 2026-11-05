@@ -17,8 +17,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QTabWidget, QTextEdit, QVBoxLayout,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
+                               QLineEdit, QPushButton, QSplitter, QTextEdit, QVBoxLayout,
                                QWidget)
 
 from fmpy.scenario_backends import ollama_models, run_with_claude, run_with_ollama
@@ -64,14 +64,69 @@ class AgentChatDialog(QWidget):
     def __init__(self, fmu=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("에이전트에게 시나리오 요청")
-        self.resize(1020, 720)
+        self.resize(1100, 720)
         self.worker = None
         self.turn = 0
         self.lastScenario = None
         self.lastDirectory = None
         self.settings = agent_settings.load()
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        splitter = QSplitter()
+        outer.addWidget(splitter, 1)
+
+        splitter.addWidget(self._buildChatSidebar())
+        splitter.addWidget(self._buildMainArea(fmu))
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([340, 760])
+
+        self.appendSystem("모델은 시나리오 JSON만 만듭니다. 검증과 실제 FMU 실행은 항상 이 코드가 "
+                          "직접 하고, 판정 기준이 없는 요청은 '판정 기준 없음'으로 표시됩니다.")
+        self.onBackendChanged(self.backendCombo.currentIndex())
+
+    def _buildChatSidebar(self):
+        """The persistent chat column: transcript on top, input pinned at the bottom."""
+        sidebar = QWidget()
+        sidebar.setMinimumWidth(280)
+        sidebar.setMaximumWidth(480)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        header = QLabel("<b>에이전트에게 요청</b>")
+        layout.addWidget(header)
+        rule = QFrame()
+        rule.setFrameShape(QFrame.HLine)
+        layout.addWidget(rule)
+
+        self.transcript = QTextEdit()
+        self.transcript.setReadOnly(True)
+        layout.addWidget(self.transcript, 1)
+
+        self.input = QLineEdit()
+        self.input.setPlaceholderText(
+            "자연어로 시나리오를 요청하세요. 예: setpoint를 0.2초에 0에서 2로 올리고 "
+            "output이 -10~10 안에 있는지 확인")
+        self.input.returnPressed.connect(self.send)
+        layout.addWidget(self.input)
+
+        inputButtons = QHBoxLayout()
+        self.sendButton = QPushButton("보내기")
+        self.sendButton.clicked.connect(self.send)
+        self.cancelButton = QPushButton("중지")
+        self.cancelButton.setEnabled(False)
+        self.cancelButton.clicked.connect(self.cancelRun)
+        inputButtons.addWidget(self.sendButton, 1)
+        inputButtons.addWidget(self.cancelButton)
+        layout.addLayout(inputButtons)
+
+        return sidebar
+
+    def _buildMainArea(self, fmu):
+        """FMU/backend/output controls on top, the result graph filling the rest."""
+        main = QWidget()
+        layout = QVBoxLayout(main)
 
         fmuRow = QHBoxLayout()
         self.fmuPath = QLineEdit(str(fmu or ""))
@@ -117,31 +172,8 @@ class AgentChatDialog(QWidget):
         outputRow.addWidget(self.outputButton)
         layout.addLayout(outputRow)
 
-        self.tabs = QTabWidget()
-        chatTab = QWidget()
-        chatLayout = QVBoxLayout(chatTab)
-        self.transcript = QTextEdit()
-        self.transcript.setReadOnly(True)
-        chatLayout.addWidget(self.transcript, 1)
-        inputRow = QHBoxLayout()
-        self.input = QLineEdit()
-        self.input.setPlaceholderText(
-            "자연어로 시나리오를 요청하세요. 예: setpoint를 0.2초에 0에서 2로 올리고 output이 "
-            "-10~10 안에 있는지 확인")
-        self.input.returnPressed.connect(self.send)
-        self.sendButton = QPushButton("보내기")
-        self.sendButton.clicked.connect(self.send)
-        self.cancelButton = QPushButton("중지")
-        self.cancelButton.setEnabled(False)
-        self.cancelButton.clicked.connect(self.cancelRun)
-        inputRow.addWidget(self.input, 1)
-        inputRow.addWidget(self.sendButton)
-        inputRow.addWidget(self.cancelButton)
-        chatLayout.addLayout(inputRow)
-        self.tabs.addTab(chatTab, "대화")
         self.plot = ScenarioResults()
-        self.tabs.addTab(self.plot, "결과 그래프")
-        layout.addWidget(self.tabs, 1)
+        layout.addWidget(self.plot, 1)
 
         buttons = QHBoxLayout()
         self.openResultsButton = QPushButton("결과 폴더 열기")
@@ -154,9 +186,7 @@ class AgentChatDialog(QWidget):
         buttons.addWidget(self.saveScenarioButton)
         layout.addLayout(buttons)
 
-        self.appendSystem("모델은 시나리오 JSON만 만듭니다. 검증과 실제 FMU 실행은 항상 이 코드가 "
-                          "직접 하고, 판정 기준이 없는 요청은 '판정 기준 없음'으로 표시됩니다.")
-        self.onBackendChanged(self.backendCombo.currentIndex())
+        return main
 
     # -- setup -------------------------------------------------------------
 
@@ -292,7 +322,6 @@ class AgentChatDialog(QWidget):
         rows = result.get("samples")
         if rows and scenario:
             self.plot.setResult(rows, scenario["outputs"])
-            self.tabs.setCurrentWidget(self.plot)
 
         artifacts = result.get("artifacts") or {}
         if artifacts.get("directory"):

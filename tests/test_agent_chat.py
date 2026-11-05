@@ -93,22 +93,24 @@ def test_saving_the_generated_scenario_writes_it_verbatim(app, tmp_path, monkeyp
     dialog.close()
 
 
-def test_main_window_exposes_the_toolbar_action(app):
+def test_the_panel_can_still_be_constructed_standalone(app):
+    # Not how the GUI reaches it any more (that's the single "Scenario..."
+    # toolbar action -> ScenarioDialog's "에이전트에게 요청" tab), but the
+    # class stays usable on its own for anything else that wants to embed it.
     window = MainWindow()
-    assert hasattr(window, "agentChatAction")
-    assert window.agentChatAction.text()
-    # Constructed directly (not via .exec(), which blocks with no event loop to close it).
     dialog = AgentChatDialog(window.filename, window)
     assert dialog.fmuPath.text() == ""
     dialog.close()
     window.close()
 
 
-def test_main_window_toolbar_action_opens_the_scenario_dialogs_agent_tab(
+def test_main_window_toolbar_opens_one_scenario_dialog_with_the_agent_tab_inside(
         app, reference_fmus_dist_dir):
     window = MainWindow()
     window.filename = str(reference_fmus_dist_dir / "2.0" / "Feedthrough.fmu")
-    # Same as openAgentChat(), minus the blocking .exec() a headless test cannot close.
+    assert not hasattr(window, "agentChatAction")  # no separate toolbar entry any more
+    # What the "Scenario..." action opens, minus the blocking .exec() a
+    # headless test cannot close; the agent tab is reached inside that window.
     dialog = window.ensureScenarioDialog()
     dialog.showAgentChatTab()
     assert dialog.tabs.currentWidget() is dialog.agentChatTab

@@ -511,6 +511,67 @@ tests/test_scenario_batch_gui.py tests/test_agent_settings.py -q` →
 탭 안의 "설정..." 버튼으로 충분하다고 판단(요청 범위를 벗어난 중복 UI
 방지). 이번에도 **커밋/푸시는 안 했다** — 요청 시 진행.
 
+### 추가 변경: 메인 툴바를 "Scenario..." 하나로 통합 (같은 세션, 이어서)
+
+사용자 지적: "아직 gui에 scenario 에이전트에게 요청 여러 시나리오 실행 3개가
+보이는데 왜그런거야?" → "시나리오창 하나에 통합해줘. 그리고 agent 설정은
+어디서 하는지."
+
+원인: 탭 통합은 실제로 되어 있었지만(앞 커밋), 메인 툴바에는 `Scenario...`,
+`에이전트에게 요청...`, `여러 시나리오 실행...` **세 버튼을 그대로 남겨둔
+채** 셋 다 같은 창을 열도록만 바꿔서, 안은 통합됐는데 밖(툴바)은 여전히
+3개로 보였다. 지적이 맞아서 그대로 수정:
+
+- `src/fmpy/gui/MainWindow.py`에서 `agentChatAction`/`batchAction` 툴바
+  추가와 `openAgentChat()`/`openBatch()` 메서드를 제거. 툴바에는 이제
+  시나리오 관련 버튼이 **`Scenario...` 하나**(+ `시나리오 해제`)뿐이고,
+  툴팁에 "시나리오 로드·실행, 에이전트에게 요청, 여러 시나리오 실행을
+  모두 여기서 합니다"를 적어 안내. `ensureScenarioDialog()`/
+  `showAgentChatTab()`/`showBatchTab()`는 그대로 유지(테스트와 내부 탐색에
+  계속 사용).
+- 실제 창에서 `w.ui.toolBar.actions()`로 툴바 구성을 확인: 시나리오 관련은
+  `['Scenario...', '시나리오 해제']` 뿐이고, 그 창의 탭은 여전히 5개
+  (`['시나리오', '결과 그래프', '판정 / 결과', '에이전트에게 요청', '여러
+  시나리오 실행']`) 전부 있음을 실제로 띄워서 확인.
+- `tests/test_agent_chat.py`/`tests/test_scenario_batch_gui.py`의 낡은
+  "툴바 액션이 있다" 단언을 "툴바 액션이 **없다**(`not hasattr`)" +
+  "`ensureScenarioDialog()`로 열어서 탭 전환은 여전히 된다"로 교체.
+- **에이전트 설정 위치**(사용자 질문에 대한 답): 메인 툴바 `Scenario...`
+  → 열린 창의 **"에이전트에게 요청"** 탭 → 그 탭 안의 **"설정..."** 버튼.
+  별도 메인 툴바 버튼은 두지 않았다(이미 지난 라운드에서 그렇게 결정했고
+  이번에도 유지) — 사용자에게 직접 이 경로를 안내함.
+
+검증: 전체 재실행 → **114 passed**(개수 동일, 테스트 내용만 갱신).
+`scripts/check_gui.py` + 직접 띄워서 툴바·탭 구성을 실제로 확인.
+`feature/agent-chat-and-batch` 브랜치에 커밋 후 푸시.
+
+### 추가 변경: 시나리오 창 최대화, 에이전트 탭 사이드바형 채팅 (같은 세션, 이어서)
+
+사용자 요청: "시나리오 실행창을 최대화 할 수 있게 변경해주고 에이전트
+요청은 사이드바 형태로 채팅하는 느낌으로."
+
+- `src/fmpy/gui/scenario.py`: `ScenarioDialog.__init__`에서
+  `self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint |
+  Qt.WindowMinimizeButtonHint)` 추가. QDialog는 기본적으로 최대화 버튼이
+  없어서(최소화도 없음) 명시적으로 플래그를 더해야 한다. 실제 창에서
+  `windowFlags()`로 두 플래그가 모두 켜졌는지 확인.
+- `src/fmpy/gui/agent_chat.py`: 내부에 있던 "대화"/"결과 그래프" `QTabWidget`
+  전환 방식을 없애고 **`QSplitter`로 좌우 분할**했다. 왼쪽
+  (`_buildChatSidebar()`, 폭 280~480px 제한)은 대화 내역(`transcript`)과
+  입력창(`input`)+보내기/중지 버튼만 있는 전형적인 채팅 사이드바. 오른쪽
+  (`_buildMainArea()`)은 FMU/백엔드/모델/결과 폴더 설정 + 결과 그래프
+  (`plot`)를 전부 모아 항상 보이게 했다 — 턴이 끝나면 바로 오른쪽 그래프가
+  갱신되고 탭을 전환할 필요가 없다. 위젯 속성 이름(`fmuPath`, `backendCombo`,
+  `transcript`, `input`, `plot` 등)은 기존 테스트가 많이 참조해서 전부
+  그대로 유지하고 **컨테이너 구조만** 바꿨다. `onResult()`의
+  `self.tabs.setCurrentWidget(self.plot)` 호출은 더 이상 `self.tabs`가 없어
+  제거(그래프가 항상 보이므로 전환이 필요 없음).
+- 실제로 end-to-end 턴을 새 레이아웃으로 돌려 확인: 사이드바에 요청 입력 →
+  오른쪽 그래프에 결과 데이터 1건 반영, 대화 내역에 텍스트 반영.
+
+검증: 전체 재실행 → **114 passed**(위젯 속성이 그대로라 테스트 변경 없이
+통과). `scripts/check_gui.py` + `windowFlags()`/탭 구성 실제 확인.
+
 ### 이 세션의 실행 환경 (중요)
 
 작업 디렉터리는 `C:\Users\nubur\fmpy_claude`이며 `origin/main`(`bb5a1e1`)의

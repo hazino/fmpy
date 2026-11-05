@@ -281,8 +281,14 @@ class MainWindow(QMainWindow):
         self.ui.actionExit.triggered.connect(QApplication.closeAllWindows)
 
         # tools menu
+        # One entry point for everything scenario-related: loading/running a
+        # single JSON, the agent chat, and the multi-scenario batch runner are
+        # all tabs inside the one ScenarioDialog this opens (see ScenarioDialog
+        # in scenario.py). Agent settings live inside its "에이전트에게 요청"
+        # tab, behind that tab's own "설정..." button.
         self.scenarioAction = self.ui.toolBar.addAction("Scenario...")
-        self.scenarioAction.setToolTip("Load and run an FMI 2.0 JSON scenario")
+        self.scenarioAction.setToolTip(
+            "시나리오 로드·실행, 에이전트에게 요청, 여러 시나리오 실행을 모두 여기서 합니다.")
         self.scenarioAction.triggered.connect(self.openScenario)
         self.scenarioDialog = None
         self.activeScenario = None
@@ -292,15 +298,6 @@ class MainWindow(QMainWindow):
         self.clearScenarioAction = self.ui.toolBar.addAction("시나리오 해제")
         self.clearScenarioAction.setEnabled(False)
         self.clearScenarioAction.triggered.connect(self.clearScenario)
-        self.agentChatAction = self.ui.toolBar.addAction("에이전트에게 요청...")
-        self.agentChatAction.setToolTip(
-            "자연어로 시나리오를 요청합니다 (Ollama/Claude). 모델은 JSON만 만들고, "
-            "검증과 실행은 항상 fmpy 코드가 직접 합니다.")
-        self.agentChatAction.triggered.connect(self.openAgentChat)
-        self.batchAction = self.ui.toolBar.addAction("여러 시나리오 실행...")
-        self.batchAction.setToolTip(
-            "직접 쓴 시나리오 JSON 여러 개를 골라 한 번에 돌리고 합격/불합격을 종합합니다.")
-        self.batchAction.triggered.connect(self.openBatch)
         self.ui.actionBuildPlatformBinary.triggered.connect(self.buildPlatformBinary)
 
         self.ui.actionValidateFMU.triggered.connect(self.validateFMU)
@@ -449,22 +446,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
             return
         self.ensureScenarioDialog().exec()
-
-    def openAgentChat(self):
-        if self.simulationThread is not None and self.simulationThread.isRunning():
-            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
-            return
-        dialog = self.ensureScenarioDialog()
-        dialog.showAgentChatTab()
-        dialog.exec()
-
-    def openBatch(self):
-        if self.simulationThread is not None and self.simulationThread.isRunning():
-            QMessageBox.information(self, "Scenario", "Stop the current simulation first.")
-            return
-        dialog = self.ensureScenarioDialog()
-        dialog.showBatchTab()
-        dialog.exec()
 
     def showScenarioResult(self, result):
         import numpy as np
